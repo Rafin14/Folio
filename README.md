@@ -10,7 +10,7 @@
 
 ## Demo video
 
-[▶ Watch the Folio demo](docs/Folio_vid.mp4?raw=true)
+![Folio app demo](docs/Folio_demo.gif)
 
 ## A closer look
 
