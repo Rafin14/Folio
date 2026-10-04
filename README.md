@@ -8,6 +8,10 @@
 
 </div>
 
+## Demo video
+
+[▶ Watch the Folio demo](docs/Folio_vid.mp4?raw=true)
+
 ## A closer look
 
 Real Folio screens, captured with safe sample content. No personal documents or connected accounts are shown.
