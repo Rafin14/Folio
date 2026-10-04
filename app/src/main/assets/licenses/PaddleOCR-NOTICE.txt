@@ -1,0 +1,20 @@
+Folio includes selected Android preprocessing/postprocessing primitives from
+PaddlePaddle/PaddleOCR, copyright (c) 2026 PaddlePaddle Authors, Apache License 2.0.
+Source revision: dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf.
+https://github.com/PaddlePaddle/PaddleOCR/tree/dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf/deploy/ppocr-android
+Original source copyright/license headers are retained.
+
+Bundled official models (upstream SHA-256 identifiers verified 2026-10-04):
+PP-OCRv6_small_det_onnx_infer/inference.onnx (9,880,512 bytes)
+PP-OCRv6_small_rec_onnx_infer/inference.onnx (21,159,378 bytes)
+The supplied configuration/dictionary is bundled; characters.json is derived
+from the recognition YAML dictionary and adds the upstream final space entry.
+The official model cards separately declare Apache-2.0:
+https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det
+https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec
+The identical ONNX files are published under:
+https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx
+https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx
+det SHA-256: d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e
+rec SHA-256: 5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634
+See PaddleOCR-Apache-2.0.txt for license terms.

@@ -1,0 +1,25 @@
+Folio LCNet integration
+
+Model: lcnet100_h_e_bifpn_256_fp32.onnx (DocAligner public LCNet heatmap model)
+SHA-256: f4117b786e3a18470f3865c93f3c2bd69d9b998edd60f385574a5c665e79594e
+Architecture/model filename: DocsaidLab DocAligner
+https://github.com/DocsaidLab/DocAligner
+DocAligner source is licensed under Apache License 2.0 (bundled separately).
+The supplied file's SHA-256 matched a fresh download of the public model linked
+by DocAligner's heatmap_reg/infer.py on 2026-10-04:
+https://github.com/DocsaidLab/DocAligner/blob/main/docaligner/heatmap_reg/infer.py
+Public upstream model file ID: 1IlbLPkCv-TdaBLOPh_4J97P1_KHYYJ7a
+Training-data provenance has not been independently audited.
+
+Inference/decoder adapted from the owner's DocumentDetectorBenchmark LCNet
+implementation and DocAligner heatmap regression inference.
+Changes: Kotlin/ONNX Runtime Android integration, native-resolution heatmap
+contour centroid extraction, normalized pixel-center coordinates, synchronized
+session/buffer reuse, benchmark confidence/geometry validation and time-based
+corner smoothing. Folio uses LCNet-only automatic detection; missing predictions
+use manual corner review. OpenCV remains for heatmap decoding and image processing.
+
+ONNX Runtime: Copyright (c) Microsoft Corporation. MIT license and third-party
+notices are included alongside this notice. Preserve applicable notices/licenses
+when copying or redistributing these components. No change to existing Folio or
+PDF dependency licensing.

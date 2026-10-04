@@ -1,0 +1,7 @@
+# Optional: Android Studio creates sdk.dir for your local Android SDK.
+# Alternatively set ANDROID_HOME to your own SDK installation.
+# Optional Google Drive setup: enter YOUR public Web OAuth Client ID locally.
+folio.google.webClientId=YOUR_WEB_CLIENT_ID.apps.googleusercontent.com
+# Never add a Web OAuth client secret. Copy this file to local.properties,
+# which is ignored by Git. A missing/placeholder ID disables Google sign-in.
+

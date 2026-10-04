@@ -1,0 +1,37 @@
+# Local configuration and credentials
+local.properties
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+google-services.json
+*service-account*.json
+secrets/
+credentials/
+# Build, editor and runtime artifacts
+.gradle/
+**/build/
+.idea/
+*.iml
+.kotlin/
+.cxx/
+.externalNativeBuild/
+captures/
+*.apk
+*.aab
+*.log
+*.hprof
+*.dmp
+*.db
+*.sqlite*
+.DS_Store
+Thumbs.db
+delivery/
+verification/
+.tools/
+*.zip
+

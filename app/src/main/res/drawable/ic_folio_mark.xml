@@ -1,0 +1,4 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="48dp" android:height="48dp" android:viewportWidth="48" android:viewportHeight="48">
+    <!-- Open folio spine and two staggered sheets. No text, clear at notification scale. -->
+    <path android:fillColor="#FFFFFF" android:pathData="M10,8L29,8L29,13L15,13L15,35L10,35ZM19,17L38,17L38,40L19,40ZM24,22L24,35L33,35L33,22Z" android:fillType="evenOdd" />
+</vector>
