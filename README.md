@@ -102,10 +102,9 @@ Tests create and delete sample library data: do not run instrumentation against 
 
 Document images and OCR stay on the device unless you explicitly share/export them or enable Drive backup. There is no analytics or advertising integration in the inspected source. Android OS backup is disabled. See [PRIVACY.md](PRIVACY.md).
 
-- The app version remains **0.1.0** (`versionCode 1`). “Release v1” identifies this source package; it does not imply a new app version or production certification.
+
 - Printed English OCR has automated coverage. Handwriting, mathematics, other languages and complex layouts are not promised. Check extracted text for mistakes.
 - OCR has a CPU fallback. NNAPI is requested on eligible devices; actual supported node execution varies. XNNPACK is CPU acceleration. GPU acceleration is not guaranteed.
-- Camera quality, print services, file providers and folder permission persistence vary by device. Physical-device acceptance is separate from emulator tests.
 - Exported PDFs do not currently embed an OCR text layer. Replacing a PDF page rasterizes that selected page; its vector/text content is not retained in the replacement.
 - Drive access and the restore-first upload lock are intentional current limitations.
 
