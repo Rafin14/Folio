@@ -1,11 +1,13 @@
 # Local configuration and credentials
 local.properties
+keystore.properties
 .env
 .env.*
 !.env.example
 *.jks
 *.keystore
 *.p12
+*.pfx
 *.pem
 *.key
 google-services.json

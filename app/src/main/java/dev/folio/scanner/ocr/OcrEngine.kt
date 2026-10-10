@@ -19,10 +19,12 @@ data class OcrMeasurement(val regions:List<TextRegion>,val initializationMs:Long
 class OcrEngine @Inject constructor(@ApplicationContext private val context:Context) : AutoCloseable {
     private val env by lazy { OrtEnvironment.getEnvironment() }
     private var det:OrtSession?=null; private var rec:OrtSession?=null
+    private var retainedOptions:OrtSession.SessionOptions?=null
     private var characters:List<String> = emptyList()
     private var initializationMs=0L
     internal var forceCpuForBenchmark=false
     internal var probeWebGpuForBenchmark=false
+    internal var isolatedHardwareProbe=false
     private var fallback=false
     private var hardware=false
     private var requestedProvider="CPU"
@@ -48,7 +50,7 @@ class OcrEngine @Inject constructor(@ApplicationContext private val context:Cont
             stageProviders[session]=providers; measuredProviders+=providers
         } finally { file.delete() }
     }
-    @Synchronized override fun close() { det?.close(); rec?.close(); det=null; rec=null; characters=emptyList(); profilePending.clear(); measuredProviders.clear(); stageProviders.clear() }
+    @Synchronized override fun close() { det?.close(); rec?.close(); det=null; rec=null; retainedOptions?.close(); retainedOptions=null; characters=emptyList(); profilePending.clear(); measuredProviders.clear(); stageProviders.clear() }
     private fun now()=android.os.SystemClock.elapsedRealtime()
     private fun load() {
         if(det!=null && rec!=null) return
@@ -65,11 +67,11 @@ class OcrEngine @Inject constructor(@ApplicationContext private val context:Cont
         val available=OrtEnvironment.getAvailableProviders()
         // ORT 1.30.0 native WebGPU crashes on the verified CPH2747 during session creation.
         // Keep the diagnostic opt-in debug-only until this model/runtime path is reliable.
-        val webGpu=dev.folio.scanner.BuildConfig.DEBUG && probeWebGpuForBenchmark && !fallback && !forceCpuForBenchmark && OrtProvider.WEBGPU in available
+        val webGpu=(isolatedHardwareProbe || dev.folio.scanner.BuildConfig.DEBUG && probeWebGpuForBenchmark) && !fallback && !forceCpuForBenchmark && OrtProvider.WEBGPU in available
         hardware=webGpu || !fallback && ocrHardwareEligible(android.os.Build.VERSION.SDK_INT,OrtProvider.NNAPI in OrtEnvironment.getAvailableProviders(),forceCpuForBenchmark)
         if(!hardware && !forceCpuForBenchmark) { fallback=true; fallbackReason="NNAPI unavailable or Android below 29" }
         requestedProvider=if(webGpu) "WebGPU" else if(hardware) "NNAPI" else "CPU"
-        fun sessions(accelerate:Boolean) { OrtSession.SessionOptions().use { options ->
+        fun sessions(accelerate:Boolean) { val options=OrtSession.SessionOptions(); retainedOptions=options
             options.setIntraOpNumThreads(2); options.setInterOpNumThreads(1)
             options.setSessionLogLevel(OrtLoggingLevel.ORT_LOGGING_LEVEL_FATAL)
             if(accelerate && requestedProvider=="WebGPU") {
@@ -78,13 +80,13 @@ class OcrEngine @Inject constructor(@ApplicationContext private val context:Cont
                 options.addWebGPU(emptyMap())
             }
             else if(accelerate) options.addNnapi(java.util.EnumSet.of(ai.onnxruntime.providers.NNAPIFlags.CPU_DISABLED))
-            if(dev.folio.scanner.BuildConfig.DEBUG) options.enableProfiling(File(context.cacheDir,"ocr-provider-${java.util.UUID.randomUUID()}").path)
+            if(dev.folio.scanner.BuildConfig.DEBUG || isolatedHardwareProbe) options.enableProfiling(File(context.cacheDir,"ocr-provider-${java.util.UUID.randomUUID()}").path)
             try { det=env.createSession(model("det").path,options); rec=env.createSession(model("rec").path,options)
                 val a=JSONArray(context.assets.open("models/ocr/rec/characters.json").bufferedReader().use { it.readText() })
                 characters=List(a.length()) { a.getString(it) }; check(characters.size==18709)
-                if(dev.folio.scanner.BuildConfig.DEBUG) { profilePending+=requireNotNull(det); profilePending+=requireNotNull(rec) }
-            } catch(e:Throwable) { det?.close(); rec?.close(); det=null; rec=null; throw e }
-        } }
+                if(dev.folio.scanner.BuildConfig.DEBUG || isolatedHardwareProbe) { profilePending+=requireNotNull(det); profilePending+=requireNotNull(rec) }
+            } catch(e:Throwable) { det?.close(); rec?.close(); det=null; rec=null; options.close(); retainedOptions=null; throw e }
+        }
         try { sessions(hardware) } catch(error:OrtException) {
             if(!hardware) throw error
             hardware=false; fallback=true; fallbackReason="$requestedProvider initialization failed: ${error.code}"; sessions(false)
@@ -96,7 +98,8 @@ class OcrEngine @Inject constructor(@ApplicationContext private val context:Cont
             session.run(mapOf("x" to tensor)).use { output -> val t=output[0] as OnnxTensor; val info=t.info as TensorInfo
                 val buffer=t.floatBuffer; val values=FloatArray(buffer.remaining()); buffer.get(values); values to info.shape }
         }
-    @Synchronized fun recognize(bitmap:Bitmap,checkCancelled:()->Unit={}):OcrMeasurement {
+    @Synchronized fun recognize(bitmap:Bitmap,checkCancelled:()->Unit={}):OcrMeasurement = dev.folio.scanner.pdfanalysis.HeavyInferenceGate.run(context,checkCancelled) { recognizeProtected(bitmap,checkCancelled) }
+    private fun recognizeProtected(bitmap:Bitmap,checkCancelled:()->Unit):OcrMeasurement {
         try { return recognizeOnce(bitmap,checkCancelled) } catch(error:OrtException) {
             if(!hardware) throw error
             close(); fallback=true; hardware=false; fallbackReason="$requestedProvider inference failed: ${error.code}"; return recognizeOnce(bitmap,checkCancelled)

@@ -72,7 +72,7 @@ class ReleaseScreenshotsTest {
             compose.onNodeWithContentDescription("Document actions").performClick()
             compose.onNodeWithText("Extract Text").performClick()
             compose.onNode(hasText("Page 1",substring=false) and hasClickAction()).performClick()
-            compose.onNodeWithText("Search within text").performTextInput("offline")
+            compose.onNodeWithText("Search within text").performTextReplacement("offline")
             waitText("1 of 3"); compose.onNodeWithContentDescription("Next match").performClick(); waitText("2 of 3")
             capture("ocr-search")
             compose.onNodeWithContentDescription("Back").performClick(); compose.onNodeWithContentDescription("Back").performClick(); waitText("PDF workspace")

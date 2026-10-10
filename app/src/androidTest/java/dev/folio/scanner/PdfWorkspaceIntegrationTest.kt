@@ -41,6 +41,28 @@ class PdfWorkspaceIntegrationTest {
     private suspend fun open(kind:String,inputs:List<Uri>)=utility.open(kind,inputs).also { sessions+=it }
     private suspend fun direct(id:String,dest:Uri,title:String,selection:String="",isTree:Boolean=false) { utility.save(id,utility.session(id).put("destination",dest.toString()).put("tree",isTree).put("title",title).put("selection",selection).put("state","pending")); utility.execute(id) { _,_ -> } }
     private suspend fun cleanup() { sessions.forEach { runCatching { utility.discard(it) } }; resources.reversed().forEach { runCatching { DocumentsContract.deleteDocument(resolver,it) } } }
+    @Test fun concurrentSessionReadsCannotRollBackAtomicPageWrites()=runBlocking {
+        val id=open("edit",listOf(source("Atomic session ${UUID.randomUUID()}.pdf")))
+        val stop=java.util.concurrent.atomic.AtomicBoolean(false)
+        val started=CompletableDeferred<Unit>()
+        val reader=async(Dispatchers.IO) {
+            started.complete(Unit)
+            while(!stop.get()) { assertEquals(4,utility.pages(id).size); yield() }
+        }
+        try {
+            started.await()
+            withContext(Dispatchers.IO) {
+                val metadata=utility.session(id).put("testPadding","x".repeat(262144))
+                repeat(100) { sequence ->
+                    utility.save(id,metadata.put("testSequence",sequence))
+                    assertEquals("Concurrent reads must preserve every completed write",sequence,utility.session(id).getInt("testSequence"))
+                }
+                val pages=utility.pages(id)
+                utility.updatePages(id,pages.map { it.copy(rotation=90) })
+                assertTrue(utility.pages(id).all { it.rotation==90 })
+            }
+        } finally { stop.set(true);reader.await();cleanup() }
+    }
     @Test fun mergeCanStartWithOneThenAppendRemoveAndReorder()=runBlocking {
         val a=source("A ${UUID.randomUUID()}.pdf"); val b=source("B ${UUID.randomUUID()}.pdf"); val c=source("C ${UUID.randomUUID()}.pdf")
         try {

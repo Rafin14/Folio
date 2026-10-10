@@ -1,6 +1,7 @@
 package dev.folio.scanner
 
 import android.graphics.*
+import androidx.activity.compose.setContent
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.test.platform.app.InstrumentationRegistry
@@ -16,6 +17,36 @@ import java.io.*
 
 class PdfWorkspaceUiTest {
     @get:Rule val compose=createAndroidComposeRule<MainActivity>()
+    @Test fun missingInitialSessionReturnsToToolsWithoutAStaleTitleRead() {
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        val utility=EntryPointAccessors.fromApplication(context,PdfWorkerDependencies::class.java).utility()
+        val source=File(context.cacheDir,"shared-images/missing-session-${System.nanoTime()}.pdf").apply {parentFile!!.mkdirs()}
+        com.itextpdf.kernel.pdf.PdfDocument(com.itextpdf.kernel.pdf.PdfWriter(source)).use {it.addNewPage()}
+        val original=source.readBytes()
+        val id=runBlocking {utility.open("edit",listOf(androidx.core.content.FileProvider.getUriForFile(context,"${context.packageName}.files",source)))}
+        try {
+            runBlocking {utility.discard(id)}
+            compose.activityRule.scenario.onActivity {activity ->val model=androidx.lifecycle.ViewModelProvider(activity)[dev.folio.scanner.ui.LibraryViewModel::class.java]
+                activity.setContent {dev.folio.scanner.ui.FolioTheme("AMOLED") {dev.folio.scanner.ui.PdfWorkspace(null,model,{}, {},initialSession=id)}}
+            }
+            compose.waitUntil(15000) {compose.onAllNodesWithText("Split PDF").fetchSemanticsNodes().isNotEmpty()}
+            compose.onNodeWithText("Split PDF").assertIsDisplayed();assertArrayEquals(original,source.readBytes())
+            assertFalse(utility.folder(id,create=false).exists())
+        } finally {runBlocking {utility.discard(id)};source.delete()}
+    }
+    private fun openSession(id:String) {
+        compose.activityRule.scenario.onActivity {activity ->
+            val model=androidx.lifecycle.ViewModelProvider(activity)[dev.folio.scanner.ui.LibraryViewModel::class.java]
+            activity.setContent {dev.folio.scanner.ui.FolioTheme("System") {dev.folio.scanner.ui.PdfWorkspace(null,model,{}, {},initialSession=id)}}
+        }
+        compose.waitUntil(15000) {
+            compose.onAllNodesWithContentDescription("Open PDF page 1").fetchSemanticsNodes().isNotEmpty() ||
+                compose.onAllNodesWithContentDescription("Close PDF editor").fetchSemanticsNodes().isNotEmpty()
+        }
+        // Restored saveable state can already be displaying the editor.
+        if(compose.onAllNodesWithContentDescription("Open PDF page 1").fetchSemanticsNodes().isNotEmpty())
+            compose.onNodeWithContentDescription("Open PDF page 1").performClick()
+    }
     @Test fun unsavedDialogActionsFitWithSpacingAndCancelPreservesSession() {
         val instrumentation=InstrumentationRegistry.getInstrumentation()
         val context=instrumentation.targetContext
@@ -24,9 +55,7 @@ class PdfWorkspaceUiTest {
         com.itextpdf.kernel.pdf.PdfDocument(com.itextpdf.kernel.pdf.PdfWriter(source)).use { it.addNewPage() }
         val id=runBlocking { utility.open("edit",listOf(androidx.core.content.FileProvider.getUriForFile(context,"${context.packageName}.files",source))) }
         try {
-            compose.onNodeWithText("PDF workspace").performClick()
-            compose.onNode(hasScrollAction()).performScrollToNode(hasText("Resume edit operation"))
-            compose.onNodeWithText("Resume edit operation").performScrollTo().performClick()
+            openSession(id)
             compose.waitUntil(15000) { compose.onAllNodesWithContentDescription("Close PDF editor").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithText("Rotate",substring=false).performScrollTo().performClick()
             val pages=utility.pages(id)
@@ -34,7 +63,7 @@ class PdfWorkspaceUiTest {
             compose.waitUntil(10000) { compose.onAllNodesWithText("Leave with unsaved changes?").fetchSemanticsNodes(atLeastOneRootRequired=false).isNotEmpty() }
             val dialog=compose.onNode(isRoot() and hasAnyDescendant(hasText("Leave with unsaved changes?"))).getUnclippedBoundsInRoot()
             var previousBottom=compose.onNodeWithText("Leave with unsaved changes?").getUnclippedBoundsInRoot().bottom
-            listOf("Save and Export","Discard Changes","Cancel").forEach { label ->
+            listOf("Save and Export","Discard Changes and Leave","Continue Editing").forEach { label ->
                 val button=compose.onNode(hasClickAction() and hasText(label,substring=false)).assertIsDisplayed().assertIsEnabled()
                 val bounds=button.getUnclippedBoundsInRoot()
                 assertTrue("$label fully inside dialog",bounds.left>=dialog.left && bounds.right<=dialog.right && bounds.top>=dialog.top && bounds.bottom<=dialog.bottom)
@@ -46,7 +75,7 @@ class PdfWorkspaceUiTest {
             instrumentation.uiAutomation.takeScreenshot().let { image ->
                 File(context.cacheDir,"pdf-unsaved-dialog.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG,100,it) }; image.recycle()
             }
-            compose.onNodeWithText("Cancel",substring=false).performClick()
+            compose.onNodeWithText("Continue Editing",substring=false).performClick()
             compose.onNodeWithContentDescription("Close PDF editor").assertIsDisplayed()
             assertEquals(pages,utility.pages(id))
         } finally { runBlocking { utility.discard(id) }; source.delete() }
@@ -92,7 +121,7 @@ class PdfWorkspaceUiTest {
         instrumentation.uiAutomation.executeShellCommand("am start -W -n dev.folio.scanner.test/dev.folio.scanner.StorageGrantActivity").use { android.os.ParcelFileDescriptor.AutoCloseInputStream(it).readBytes() }
         assertTrue(utility.rememberDestination("pdf",android.provider.DocumentsContract.buildTreeDocumentUri("dev.folio.scanner.test.storage","root")))
         try {
-            compose.onNodeWithText("PDF workspace").performClick(); compose.onNodeWithText("Resume edit operation").performScrollTo().performClick()
+            openSession(id)
             compose.waitUntil(15000) { compose.onAllNodesWithContentDescription("PDF page 1 canvas").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithText("Draw",substring=false).performScrollTo().performClick()
             compose.onNodeWithContentDescription("PDF page 1 canvas").performTouchInput { swipe(androidx.compose.ui.geometry.Offset(width*.35f,height*.3f),androidx.compose.ui.geometry.Offset(width*.65f,height*.6f),700) }
@@ -108,8 +137,12 @@ class PdfWorkspaceUiTest {
             try { utility.engine.read(exported).use { assertTrue(it.getPage(1).contentBytes.toString(Charsets.ISO_8859_1).contains(" RG")) } } finally { exported.delete() }
             assertArrayEquals(original,source.readBytes()); assertEquals(before,runBlocking { utility.documents.dao.allDocuments() })
             compose.activityRule.scenario.recreate()
-            compose.waitUntil(15000) { compose.onAllNodesWithText("Edit PDF").fetchSemanticsNodes(atLeastOneRootRequired=false).isNotEmpty() }
+            compose.waitUntil(15000) { compose.onAllNodesWithText("PDF workspace").fetchSemanticsNodes(atLeastOneRootRequired=false).isNotEmpty() }
+            compose.onNodeWithText("PDF workspace").performClick()
+            compose.onNodeWithText("Edit PDF").assertIsDisplayed()
             compose.onAllNodesWithText("Resume edit operation").assertCountEquals(0)
+            assertEquals("complete",utility.session(id).getString("state"))
+            android.graphics.pdf.PdfRenderer(context.contentResolver.openFileDescriptor(destination!!,"r")!!).use {assertEquals(1,it.pageCount)}
         } finally { destination?.let { android.provider.DocumentsContract.deleteDocument(context.contentResolver,it) }; prefs.edit().apply { if(previous==null) remove("pdf") else putString("pdf",previous) }.commit(); runBlocking { utility.discard(id) }; source.delete() }
     }
     @Test fun lightDarkAmoledAndSystemWorkspaceRemainReadableAndAligned() {
@@ -154,7 +187,7 @@ class PdfWorkspaceUiTest {
             compose.onNodeWithText("PDF workspace").performClick()
             listOf("Split PDF","Merge PDF","Image to PDF","PDF to Image","Edit PDF","Generate PDF").forEach { compose.onNodeWithText(it).assertIsDisplayed() }
             compose.onAllNodesWithText("Saved PDFs").assertCountEquals(0); compose.onAllNodesWithText("Import PDF").assertCountEquals(0)
-            compose.onNodeWithText("Resume edit operation").performScrollTo().performClick()
+            openSession(id)
             compose.waitUntil(15000) { compose.onAllNodesWithContentDescription("PDF page 1 canvas").fetchSemanticsNodes().isNotEmpty() }
             compose.onAllNodesWithText("Note",substring=false).assertCountEquals(0)
             compose.onNodeWithText("Draw",substring=false).performScrollTo().performClick(); compose.onNodeWithText("Bold").performScrollTo().performClick(); compose.onNodeWithContentDescription("Drawing color 4").performScrollTo().performClick()
@@ -176,15 +209,18 @@ class PdfWorkspaceUiTest {
             assertEquals(original[0].id,utility.pages(id).last().id)
             compose.onNodeWithText("Delete",substring=false).performScrollTo().performClick(); compose.onNodeWithText("Cancel",substring=false).performClick()
             compose.onNodeWithContentDescription("Close PDF editor").performClick()
-            compose.waitUntil(10000) { compose.onAllNodesWithText("Leave with unsaved changes?").fetchSemanticsNodes(atLeastOneRootRequired=false).isNotEmpty() }; compose.onNodeWithText("Leave with unsaved changes?").assertIsDisplayed(); compose.onNodeWithText("Cancel",substring=false).performClick()
+            compose.waitUntil(10000) { compose.onAllNodesWithText("Leave with unsaved changes?").fetchSemanticsNodes(atLeastOneRootRequired=false).isNotEmpty() }; compose.onNodeWithText("Leave with unsaved changes?").assertIsDisplayed(); compose.onNodeWithText("Continue Editing",substring=false).performClick()
             compose.onNodeWithContentDescription("Close PDF editor").performClick(); compose.onNodeWithText("Save and Export").performClick()
             compose.onNodeWithText("Return to PDF editor").performClick()
             val state=utility.pages(id); assertTrue("Ink preserved",state.any { it.ink.isNotEmpty() }); assertTrue("Rotation preserved",state.any { it.rotation==90 })
             compose.activityRule.scenario.recreate()
+            // This fixture installs a standalone editor, outside MainActivity's navigation tree.
+            // Reattach its durable session; actual navigation recreation is tested from Home.
+            openSession(id)
             compose.waitUntil(15000) { compose.onAllNodesWithContentDescription("Close PDF editor").fetchSemanticsNodes(atLeastOneRootRequired=false).isNotEmpty() }
             assertEquals(state,utility.pages(id))
-            compose.onNodeWithContentDescription("Close PDF editor").performClick(); compose.onNodeWithText("Discard Changes").performClick()
-            compose.waitUntil(15000) { compose.onAllNodesWithText("Files in. Files out.").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithContentDescription("Close PDF editor").performClick(); compose.onNodeWithText("Discard Changes and Leave").performClick()
+            compose.waitUntil(15000) { compose.onAllNodesWithText("PDF workspace").fetchSemanticsNodes().isNotEmpty() }
             assertEquals(before,runBlocking { utility.documents.dao.allDocuments() })
         } finally { runBlocking { utility.discard(id) }; source.delete() }
     }
@@ -200,7 +236,7 @@ class PdfWorkspaceUiTest {
         val originals=utility.pages(id); val before=runBlocking { utility.documents.dao.allDocuments() }; val originalPages=runBlocking { utility.documents.dao.pages(doc) }; val imageBytes=File(originalPages.single().originalImageUri).readBytes()
         var externalImage:android.net.Uri?=null
         try {
-            compose.onNodeWithText("PDF workspace").performClick(); compose.onNodeWithText("Resume edit operation").performScrollTo().performClick()
+            openSession(id)
             compose.waitUntil(15000) { compose.onAllNodesWithContentDescription("PDF page 1 canvas").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithText("Replace",substring=false).performScrollTo().performClick(); compose.onNodeWithText("Choose Folio page").performClick()
             compose.onNodeWithContentDescription("Open Folio document "+runBlocking { utility.documents.dao.document(doc)!!.title }).performClick(); compose.onNodeWithContentDescription("Choose Folio Replacement copy fixture").performClick(); compose.onNodeWithText("Use selected page").performClick()
@@ -214,9 +250,25 @@ class PdfWorkspaceUiTest {
             compose.waitUntil(10000) { compose.onAllNodesWithText("2 of 3").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithText("Replace",substring=false).performScrollTo().performClick(); compose.onNodeWithText("Use Folio scanner").performClick()
             compose.waitUntil(15000) { compose.onAllNodesWithContentDescription("Live camera preview").fetchSemanticsNodes().isNotEmpty() }
-            Thread.sleep(1800)
+            compose.waitUntil(30000) {
+                var streaming=false
+                compose.activityRule.scenario.onActivity { activity ->
+                    fun ready(view:android.view.View):Boolean = when(view) {
+                        is androidx.camera.view.PreviewView -> view.previewStreamState.value==androidx.camera.view.PreviewView.StreamState.STREAMING
+                        is android.view.ViewGroup -> (0 until view.childCount).any {ready(view.getChildAt(it))}
+                        else -> false
+                    }
+                    streaming=ready(activity.window.decorView)
+                }
+                streaming
+            }
+            compose.onNodeWithContentDescription("Capture page").assertIsEnabled()
             compose.onNodeWithContentDescription("Capture page").performClick()
-            compose.waitUntil(45000) { compose.onAllNodesWithContentDescription("Crop corners").fetchSemanticsNodes().isNotEmpty() }
+            try { compose.waitUntil(45000) { compose.onAllNodesWithContentDescription("Crop corners").fetchSemanticsNodes().isNotEmpty() } }
+            catch(failure:Throwable) {
+                val model=androidx.lifecycle.ViewModelProvider(compose.activity)[dev.folio.scanner.ui.LibraryViewModel::class.java]
+                throw AssertionError("Scanner replacement did not open: busy=${model.busy.value}, error=${model.error.value}",failure)
+            }
             compose.onNodeWithText("Confirm crop").performClick()
             compose.waitUntil(30000) { compose.onAllNodesWithText("Use page").filter(isEnabled()).fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithText("Use page").performClick()
@@ -228,7 +280,8 @@ class PdfWorkspaceUiTest {
             })!!
             context.contentResolver.openOutputStream(externalImage!!)!!.use { it.write(imageBytes) }
             val preserved=utility.pages(id).take(2)
-            compose.onNodeWithContentDescription("PDF page 2 canvas").performTouchInput { swipeLeft() }
+            compose.waitUntil(30000) { compose.onAllNodesWithContentDescription("PDF page 2 canvas").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithContentDescription("PDF page 2 canvas").assertIsDisplayed().performTouchInput { swipeLeft() }
             compose.waitUntil(10000) { compose.onAllNodesWithText("3 of 3").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithText("Replace",substring=false).performScrollTo().performClick(); compose.onNodeWithText("Choose device image or PDF").performClick()
             val device=androidx.test.uiautomator.UiDevice.getInstance(instrumentation)
@@ -241,7 +294,7 @@ class PdfWorkspaceUiTest {
             compose.onNodeWithText("Use page").performClick()
             compose.waitUntil(30000) { compose.onAllNodesWithText("3 of 3").fetchSemanticsNodes().isNotEmpty() && utility.pages(id)[2].replacement.isNotEmpty() }
             assertEquals(preserved,utility.pages(id).take(2)); assertEquals(before,runBlocking { utility.documents.dao.allDocuments() }); assertEquals(originalPages,runBlocking { utility.documents.dao.pages(doc) }); assertArrayEquals(sourceBytes,source.readBytes())
-            compose.onNodeWithContentDescription("Close PDF editor").performClick(); compose.onNodeWithText("Discard Changes").performClick()
+            compose.onNodeWithContentDescription("Close PDF editor").performClick(); compose.onNodeWithText("Discard Changes and Leave").performClick()
         } finally { externalImage?.let { context.contentResolver.delete(it,null,null) }; runBlocking { utility.discard(id); utility.documents.purgeForTest(doc) }; source.delete() }
     }
 

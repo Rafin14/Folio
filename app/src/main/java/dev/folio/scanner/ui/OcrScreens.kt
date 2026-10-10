@@ -113,8 +113,8 @@ fun OcrSettingsScreen(model:LibraryViewModel,back:()->Unit) {
             Text("English printed text · PP-OCRv6_small",style=MaterialTheme.typography.titleMedium)
             Text("Recognition works offline. Handwriting, mathematics and other languages are not supported Folio capabilities. Authorized Drive backups include stored extracted text.",color=MaterialTheme.colorScheme.onSurfaceVariant)
             TextButton(onClick={ model.run { model.ocr.retryFailed() } }) { Text("Retry failed OCR") }
-            TextButton(onClick={ clear=true }) { Text("Clear OCR data") }
+            TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick={ clear=true }) { Text("Clear OCR data") }
         }
     }
-    if(clear) AlertDialog(onDismissRequest={ clear=false },title={ Text("Clear extracted text?") },text={ Text("Remove local text and its search index, pause automatic OCR, and cancel recognition. Document images are kept. Older Drive backups may still contain text.") },confirmButton={ TextButton(onClick={ clear=false; model.run { model.ocr.clear() } }) { Text("Clear OCR data") } },dismissButton={ TextButton(onClick={ clear=false }) { Text("Cancel") } })
+    if(clear) AlertDialog(onDismissRequest={ clear=false },title={ Text("Clear extracted text?") },text={ Text("Remove local text and its search index, pause automatic OCR, and cancel recognition. Document images are kept. Older Drive backups may still contain text.") },confirmButton={ TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick={ clear=false; model.run { model.ocr.clear() } }) { Text("Clear OCR data") } },dismissButton={ TextButton(onClick={ clear=false }) { Text("Cancel") } })
 }

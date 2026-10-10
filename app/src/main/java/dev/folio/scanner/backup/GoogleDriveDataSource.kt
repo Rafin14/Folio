@@ -37,6 +37,13 @@ interface DriveStore {
     /** Purge token must include metadata inspection, otherwise unrelated children may be invisible. */
     suspend fun children(parent:String):List<DriveResource>
     suspend fun deleteOwned(resource:DriveResource):Boolean
+    suspend fun deleteManifest(id:String,parent:String,hash:String) {
+        val resource=metadata(id) ?: return
+        require(resource.role=="manifest" && parent in resource.parents && resource.ownedByMe) { "Manifest ownership changed; it was kept." }
+        val file=File.createTempFile("manifest-check-",".json")
+        try { download(id,file,BackupManifest.MAX_MANIFEST_BYTES.toLong()); require(hashFile(file)==hash) { "Manifest changed; it was kept." }; deleteOwned(resource) }
+        finally { file.delete() }
+    }
 }
 
 class GoogleDriveDataSource(private val token:suspend()->String,private val checkAccount:()->Unit,
@@ -123,6 +130,16 @@ class GoogleDriveDataSource(private val token:suspend()->String,private val chec
         val resource=owned(id,parent,"asset") ?: return
         request("$api/${query(id)}", "DELETE",headers=conditional(resource),accepted=setOf(204,404)) { }
         check(metadata(id)==null) { "Drive has not confirmed removal of resource $id. Retry will verify it again." }
+    }
+    override suspend fun deleteManifest(id:String,parent:String,hash:String) {
+        val resource=owned(id,parent,"manifest") ?: return
+        val current=metadata(id) ?: return
+        if(!current.ownedByMe || current.folder) throw DriveOwnershipReview("Manifest ownership is ambiguous; it was kept.")
+        try { request("$api/${query(id)}?alt=media","GET") { c ->
+            if(sha256(c.inputStream.use { boundedRead(it,BackupManifest.MAX_MANIFEST_BYTES) })!=hash) throw DriveOwnershipReview("Manifest changed during cleanup; it was kept.")
+        } } catch(error:DriveFailure) { if(error.code==404) return else throw error }
+        request("$api/${query(id)}","DELETE",headers=conditional(resource),accepted=setOf(204,404)) {}
+        check(metadata(id)==null) { "Manifest removal is not yet verified." }
     }
     private fun conditional(resource:DriveResource)=resource.etag.takeIf { it.isNotEmpty() }?.let { mapOf("If-Match" to it) }.orEmpty()
     private val resourceFields="id,mimeType,parents,appProperties,ownedByMe,version,trashed"

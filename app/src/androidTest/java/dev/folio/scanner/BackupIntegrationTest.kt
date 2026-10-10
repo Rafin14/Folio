@@ -16,6 +16,59 @@ import java.io.*
 import java.util.UUID
 
 class BackupIntegrationTest {
+    @Test fun unchangedBackupsReuseManifestAndRetentionSurvivesInterruptionWithoutDeletingAssets()=runBlocking {
+        fixture { db,docs,backup,drive ->
+            val id=docs.create("Retention fixture")
+            docs.importImage(id,ByteArrayInputStream(image(Color.BLUE,300,400)),detectDocument=false)
+            backup.execute(backup.prepare(false),drive)
+            val first=drive.latest()
+            backup.execute(backup.prepare(false),drive)
+            assertEquals(1,drive.entries.count { it.role=="manifest" })
+            assertEquals(first.remoteId,drive.latest().remoteId)
+            docs.rename(id,"Second generation")
+            backup.execute(backup.prepare(false),drive)
+            val second=drive.latest()
+            val assets=drive.entries.filter { it.role=="asset" }.map { it.id }.toSet()
+            docs.rename(id,"Third generation")
+            val request=backup.prepare(false)
+            drive.purgeFailure=first.remoteId
+            try { backup.execute(request,drive); fail("Expected interrupted retention") } catch(_:IOException) {}
+            assertEquals(3,drive.entries.count { it.role=="manifest" })
+            backup.execute(request,drive)
+            assertEquals(2,drive.entries.count { it.role=="manifest" })
+            assertTrue(drive.exists(second.remoteId)); assertFalse(drive.exists(first.remoteId))
+            assertEquals(assets,drive.entries.filter { it.role=="asset" }.map { it.id }.toSet())
+            val restored=drive.latest()
+            docs.rename(id,"Locally renamed")
+            backup.execute(backup.prepare(false,restored),drive)
+            assertEquals(2,db.documents().allDocuments().size)
+        }
+    }
+    @Test fun managedPdfBackupRestoreRetainsNativeSourceAndPageDeletionRemovesHistoricalPdfData()=runBlocking {
+        fixture { db,docs,backup,drive ->
+            val engine=dev.folio.scanner.pdf.PdfEngine()
+            val file=File(context.cacheDir,"managed-drive-${UUID.randomUUID()}.pdf")
+            try {
+                com.itextpdf.kernel.pdf.PdfDocument(com.itextpdf.kernel.pdf.PdfWriter(file)).use { pdf -> repeat(2) { pdf.addNewPage() } }
+                val id=docs.importPdf(file,"Managed backup fixture",engine)
+                backup.execute(backup.prepare(false),drive)
+                val preview=drive.latest(); val hash=preview.manifest.documents.single().pdfHash
+                assertTrue(preview.manifest.documents.single().importedPdf)
+                assertTrue(preview.manifest.assets.any { it.hash==hash })
+                docs.rename(id,"Original renamed")
+                backup.execute(backup.prepare(false,preview),drive)
+                val restored=db.documents().allDocuments().first { it.id!=id }
+                assertTrue(restored.importedPdf); assertEquals(hash,restored.pdfHash)
+                assertEquals(hash,hashFile(File(docs.directory(restored.id),"pdf/$hash.pdf")))
+                val page=db.documents().pages(id).first()
+                docs.deletePages(id,setOf(page.id)); docs.permanentlyDeletePages(setOf(page.id))
+                backup.executeDeletions("fixture@example.invalid",drive)
+                assertEquals(1,drive.latest().manifest.pages.count { it.page.documentId==id })
+                assertEquals("",drive.latest().manifest.documents.first { it.id==id }.pdfHash)
+                assertTrue(drive.latest().manifest.documents.first { it.id==id }.importedPdf)
+            } finally { file.delete() }
+        }
+    }
     @Test fun pageTrashRetainsCloudAssetsAndRestoreKeepsIdsBeforePermanentRemoval()=runBlocking {
         fixture { db,docs,backup,drive ->
             val id=docs.create("Page cloud trash")
@@ -404,7 +457,7 @@ class BackupIntegrationTest {
             if(failDeletion) { failDeletion=false; throw IOException("Offline deletion") }
             entries.firstOrNull { it.id==id }?.let { require(it.parent==parent && it.role=="asset"); entries.remove(it) }
         }
-        fun latest():RestorePreview { val e=entries.last { it.role=="manifest" }; return RestorePreview(e.id,sha256(e.bytes),BackupManifest.decode(e.bytes),e.parent) }
+        fun latest():RestorePreview { val e=entries.filter { it.role=="manifest" }.sortedBy { BackupManifest.decode(it.bytes).createdAt }.last(); return RestorePreview(e.id,sha256(e.bytes),BackupManifest.decode(e.bytes),e.parent) }
     }
     @Test fun legacyLocalDataCompletedRestoreAndConfiguredAutomaticBackupMigrateSafely()=runBlocking {
         fixture { db,docs,_,_ ->

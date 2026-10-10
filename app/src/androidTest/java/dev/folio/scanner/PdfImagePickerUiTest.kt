@@ -47,9 +47,11 @@ class PdfImagePickerUiTest {
             }
             compose.onNodeWithText("PDF workspace").performClick()
             compose.onNodeWithText("Image to PDF").performClick()
-            device.waitForIdle(); Thread.sleep(700)
+            val photoSelector=By.descStartsWith("Photo taken on")
+            compose.waitUntil(20000) {device.findObjects(photoSelector).size>=2}
+            device.waitForIdle()
             device.dumpWindowHierarchy(File(context.cacheDir,"native-gallery.xml"))
-            val photoSelector=By.descStartsWith("Photo taken on"); val thumbnails=device.findObjects(photoSelector)
+            val thumbnails=device.findObjects(photoSelector)
             assertTrue("Native photo picker exposes the two recent fixture thumbnails",thumbnails.size>=2)
             thumbnails[0].click(); device.waitForIdle(); device.findObjects(photoSelector)[1].click()
             device.waitForIdle(); device.dumpWindowHierarchy(File(context.cacheDir,"native-gallery-selected.xml")); val add=device.wait(Until.findObject(By.textStartsWith("Add")),2000) ?: device.findObject(By.textStartsWith("Select")) ?: device.findObject(By.text("Done")) ?: device.findObject(By.text("ADD"))
@@ -64,7 +66,7 @@ class PdfImagePickerUiTest {
             val useFolder=device.wait(Until.findObject(By.text(java.util.regex.Pattern.compile("(?i)Use this folder"))),10000) ?: device.findObject(By.res("com.google.android.documentsui","action_menu_select"))
             assertNotNull(useFolder); useFolder!!.click()
             device.wait(Until.findObject(By.text(java.util.regex.Pattern.compile("(?i)Allow"))),10000)?.click()
-            compose.waitUntil(90000) { compose.onAllNodesWithText("Files in. Files out.").fetchSemanticsNodes(atLeastOneRootRequired=false).isNotEmpty() }
+            compose.waitUntil(90000) { compose.onAllNodesWithText("Split PDF").fetchSemanticsNodes(atLeastOneRootRequired=false).isNotEmpty() }
             folder=utility.rememberedDestination("pdf"); assertNotNull("Native tree grant persisted",folder)
             assertEquals(folder,dev.folio.scanner.pdf.PdfUtility(context,utility.engine,utility.documents,utility.pipeline).rememberedDestination("pdf"))
             val parent=android.provider.DocumentsContract.buildDocumentUriUsingTree(folder!!,android.provider.DocumentsContract.getTreeDocumentId(folder!!))

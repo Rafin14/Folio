@@ -25,7 +25,10 @@ data class Document(
     val favorite: Boolean = false,
     val pageCount: Int = 0,
     val deleting: Boolean = false,
-    @ColumnInfo(defaultValue = "NULL") val trashedAt: Long? = null
+    @ColumnInfo(defaultValue = "NULL") val trashedAt: Long? = null,
+    @ColumnInfo(defaultValue = "''") val pdfHash: String = "",
+    @ColumnInfo(defaultValue = "0") val pdfRevision: Long = 0,
+    @ColumnInfo(defaultValue = "0") val importedPdf: Boolean = false
 )
 
 @Entity(tableName = "pages", foreignKeys = [ForeignKey(

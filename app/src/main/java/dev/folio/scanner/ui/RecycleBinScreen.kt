@@ -66,7 +66,7 @@ internal fun RecycleBinScreen(model: LibraryViewModel,back: ()->Unit) {
                 Checkbox(selected.size==entries.size,onCheckedChange={ selected=if(it) entries else emptyList() },enabled=!busy,modifier=Modifier.semantics { contentDescription="Select all recycled documents" })
                 Text("${selected.size} selected")
                 TextButton(enabled=selected.isNotEmpty() && !busy,onClick={ restore(selected.toSet()) }) { Text("Restore selected") }
-                TextButton(enabled=selected.isNotEmpty() && !busy,onClick={ removal=selected; emptying=false }) { Text("Delete selected") }
+                TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),enabled=selected.isNotEmpty() && !busy,onClick={ removal=selected; emptying=false }) { Text("Delete selected") }
             }
             if(entries.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(),contentAlignment=Alignment.Center) { Text("Recycle Bin is empty",style=MaterialTheme.typography.titleMedium) }
             else LazyColumn(Modifier.weight(1f),contentPadding=PaddingValues(12.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
@@ -86,7 +86,7 @@ internal fun RecycleBinScreen(model: LibraryViewModel,back: ()->Unit) {
                         }
                         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.End) {
                             TextButton(enabled=!busy && docs.none { it.id==page.documentId },onClick={ restore(setOf(key)) },modifier=Modifier.semantics { contentDescription="Restore page ${page.id}" }) { Text("Restore") }
-                            TextButton(enabled=!busy,onClick={ removal=listOf(key); emptying=false },modifier=Modifier.semantics { contentDescription="Permanently delete page ${page.id}" }) { Text("Delete permanently") }
+                            TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),enabled=!busy,onClick={ removal=listOf(key); emptying=false },modifier=Modifier.semantics { contentDescription="Permanently delete page ${page.id}" }) { Text("Delete permanently") }
                         }
                         HorizontalDivider()
                     }
@@ -105,7 +105,7 @@ internal fun RecycleBinScreen(model: LibraryViewModel,back: ()->Unit) {
                         }
                         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.End) {
                             TextButton(enabled=!busy,onClick={ restore(setOf(doc.id)) },modifier=Modifier.semantics { contentDescription="Restore ${doc.title}" }) { Text("Restore") }
-                            TextButton(enabled=!busy,onClick={ removal=listOf(doc.id); emptying=false },modifier=Modifier.semantics { contentDescription="Permanently delete ${doc.title}" }) { Text("Delete permanently") }
+                            TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),enabled=!busy,onClick={ removal=listOf(doc.id); emptying=false },modifier=Modifier.semantics { contentDescription="Permanently delete ${doc.title}" }) { Text("Delete permanently") }
                         }
                         HorizontalDivider()
                     }
@@ -115,6 +115,6 @@ internal fun RecycleBinScreen(model: LibraryViewModel,back: ()->Unit) {
     }
     conflict?.let { doc -> NameDialog("Restore with another name","Document name",restoreNames[doc.id] ?: doc.title,busy,{ conflict=null },validate={ documentNameConflict(it,library.documents+docs.filter { d -> d.id in restoreIds && d.id!=doc.id }.map { d -> d.copy(title=restoreNames[d.id] ?: d.title,trashedAt=null) }) }) { name -> restore(restoreIds,restoreNames+(doc.id to name)) } }
     if(removal.isNotEmpty()) AlertDialog(onDismissRequest={ if(!busy) removal=emptyList() },title={ Text(if(emptying) "Empty Recycle Bin?" else "Delete permanently?") },text={ Text("${removal.size} selected items and their associated assets will be removed from this device. Associated Google Drive backups will also be removed when the account is connected. This cannot be undone.") },confirmButton={
-        TextButton(enabled=!busy,onClick={ val ids=removal.toSet(); model.run { val docIds=ids.filter { !it.startsWith("page:") }.toSet(); val pageIds=ids.filter { it.startsWith("page:") }.map { it.removePrefix("page:") }.toSet(); if(docIds.isNotEmpty()) model.repository.permanentlyDelete(docIds); if(pageIds.isNotEmpty()) model.repository.permanentlyDeletePages(pageIds); model.backups.enqueueDeletions(); deletedHere=true; deletedIds=ids.toList(); removal=emptyList(); selected=emptyList() } }) { Text(if(emptying) "Empty Recycle Bin" else "Delete permanently") }
+        TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),enabled=!busy,onClick={ val ids=removal.toSet(); model.run { val docIds=ids.filter { !it.startsWith("page:") }.toSet(); val pageIds=ids.filter { it.startsWith("page:") }.map { it.removePrefix("page:") }.toSet(); if(docIds.isNotEmpty()) model.repository.permanentlyDelete(docIds); if(pageIds.isNotEmpty()) model.repository.permanentlyDeletePages(pageIds); model.backups.enqueueDeletions(); deletedHere=true; deletedIds=ids.toList(); removal=emptyList(); selected=emptyList() } }) { Text(if(emptying) "Empty Recycle Bin" else "Delete permanently") }
     },dismissButton={ TextButton(enabled=!busy,onClick={ removal=emptyList() }) { Text("Cancel") } })
 }

@@ -34,6 +34,13 @@ class PdfReplacementTest {
         }
     } }
     private fun ready()=compose.waitUntil(30000) { compose.onAllNodes(hasText("Use page",substring=false) and isEnabled()).fetchSemanticsNodes(atLeastOneRootRequired=false).isNotEmpty() }
+    private fun replacementCommitted(id:String,previous:String) {
+        try { compose.waitUntil(30000) { utility.pages(id)[0].replacement.isNotEmpty() && utility.pages(id)[0].replacement!=previous } }
+        catch(failure:Throwable) {
+            val model=ViewModelProvider(compose.activity)[LibraryViewModel::class.java]
+            throw AssertionError("Replacement did not commit: busy=${model.busy.value}, error=${model.error.value}, pages=${utility.pages(id)}",failure)
+        }
+    }
     private fun capture(name:String) { compose.waitForIdle(); Thread.sleep(350); inst.uiAutomation.takeScreenshot().let { b -> File(context.cacheDir,"replacement-$name.png").outputStream().use { b.compress(Bitmap.CompressFormat.PNG,100,it) }; b.recycle() } }
 
     @Test fun selectedPdfPageRetainsNaturalSizeCorrectContentAndOriginalBytes() {
@@ -158,7 +165,7 @@ class PdfReplacementTest {
             capture("selected-pdf-page-2")
             compose.onNodeWithText("Use selected PDF page").performClick(); ready()
             compose.onNodeWithContentDescription("Match Page Size").assertIsOn(); compose.onNodeWithText("Use page").performClick()
-            compose.waitUntil(30000) { utility.pages(id)[0].replacement.isNotEmpty() }
+            replacementCommitted(id,"")
             val result=File(utility.pages(id)[0].replacement)
             utility.engine.read(result).use { assertEquals(420.0,it.getPage(1).pageSize.width.toDouble(),.001); assertEquals(600.0,it.getPage(1).pageSize.height.toDouble(),.001) }
             val image=utility.engine.render(result,1,context.cacheDir)
@@ -181,8 +188,9 @@ class PdfReplacementTest {
             compose.onNodeWithText("Confirm crop").performClick(); ready()
             compose.onNodeWithContentDescription("Match Page Size").performClick(); ready(); capture("device-image-natural")
             val previous=result.path
-            compose.onNodeWithText("Use page").performClick()
-            compose.waitUntil(30000) { utility.pages(id)[0].replacement!=previous }
+            // Capturing the preview can overlap its asynchronous redraw. Commit only the current ready preview.
+            ready();compose.onNodeWithText("Use page").assertIsEnabled().performClick()
+            replacementCommitted(id,previous)
             utility.engine.read(File(utility.pages(id)[0].replacement)).use { val size=it.getPage(1).pageSize; assertEquals(.5,size.width.toDouble()/size.height,.005) }
             context.contentResolver.openInputStream(imageUri!!)!!.use { assertArrayEquals(imageBytes,it.readBytes()) }
             assertEquals(before,runBlocking { utility.documents.dao.allDocuments() }); assertTrue(utility.pages(id)[1].replacement.isEmpty())

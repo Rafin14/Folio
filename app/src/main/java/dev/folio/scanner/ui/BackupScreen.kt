@@ -39,6 +39,7 @@ fun BackupScreen(repository:FolioBackupRepository,back:()->Unit) {
     val context=LocalContext.current; val scope=rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }; var error by rememberSaveable { mutableStateOf("") }
     var pendingEmail by rememberSaveable { mutableStateOf("") }
+    var inspecting by rememberSaveable { mutableStateOf(false) }
     var confirmation by rememberSaveable { mutableStateOf("") }
     var preview by remember { mutableStateOf<RestorePreview?>(null) }
     fun action(block:suspend()->Unit) { scope.launch {
@@ -50,7 +51,10 @@ fun BackupScreen(repository:FolioBackupRepository,back:()->Unit) {
     val consent=rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         if(result.resultCode==Activity.RESULT_OK && result.data!=null && pendingEmail.isNotEmpty()) action {
             repository.auth.complete(result.data!!)
-            withContext(Dispatchers.IO) { repository.connected(pendingEmail) }; pendingEmail=""
+            withContext(Dispatchers.IO) {
+                if(inspecting) { require(pendingEmail==state.email) { "Google account changed. Check inspection access again." }; repository.refreshInspectionAuthorization(); if(cloudPurge!=null && cloudPurge.state !in listOf("cloud-active","cloud-purged")) repository.retryCloudPurge() }
+                else repository.connected(pendingEmail)
+            }; pendingEmail=""; inspecting=false
         } else { pendingEmail=""; error="Google Drive permission was not granted. Your documents remain on this device." }
     }
     Scaffold(topBar={ TopAppBar(title={ Text("Google Drive Backup") },navigationIcon={ IconButton(onClick=back) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back") } }) }) { padding ->
@@ -67,11 +71,12 @@ fun BackupScreen(repository:FolioBackupRepository,back:()->Unit) {
                 TextButton(onClick={ action { repository.retryDeletions() } },enabled=!busy && !removing && state.email.isNotEmpty() && !cloudBlocked) { Text(if(removing) "Removing Drive backups…" else "Retry Drive removals") }
                 removalErrors.filter { it.key.startsWith("${state.email}:delete-error:") }.take(3).forEach { Text(it.session,color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall) }
             } else if(accountDeletions.any { it.state=="delete-complete" }) {
-                Text("Drive backup removed",style=MaterialTheme.typography.bodyMedium)
+                Text("Drive removal verified for ${accountDeletions.count { it.state=="delete-complete" }} permanently deleted item(s). Other cloud backups may remain.",style=MaterialTheme.typography.bodySmall)
             }
             if(state.email.isEmpty() || state.error.contains("Reconnect",ignoreCase=true)) {
                 OutlinedButton(enabled=!busy,onClick={ action {
                     pendingEmail=repository.auth.selectAccount(context)
+                    inspecting=false
                     val authorization=repository.auth.connect(pendingEmail)
                     if(authorization.pendingIntent!=null) consent.launch(IntentSenderRequest.Builder(authorization.pendingIntent.intentSender).build())
                     else { withContext(Dispatchers.IO) { repository.connected(pendingEmail) }; pendingEmail="" }
@@ -101,9 +106,10 @@ fun BackupScreen(repository:FolioBackupRepository,back:()->Unit) {
                 CloudPurgeSection(repository,state.email,cloudPurge) {
                     action {
                         pendingEmail=state.email
+                        inspecting=true
                         val authorization=repository.auth.inspectForPurge(pendingEmail)
                         if(authorization.pendingIntent!=null) consent.launch(IntentSenderRequest.Builder(authorization.pendingIntent.intentSender).build())
-                        else { repository.retryCloudPurge(); pendingEmail="" }
+                        else { repository.refreshInspectionAuthorization(); if(cloudPurge!=null && cloudPurge.state !in listOf("cloud-active","cloud-purged")) repository.retryCloudPurge(); pendingEmail=""; inspecting=false }
                     }
                 }
             }

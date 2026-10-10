@@ -3,6 +3,9 @@ package dev.folio.scanner
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.By
+import androidx.test.uiautomator.UiDevice
+import org.junit.Assert.assertTrue
 import kotlinx.coroutines.flow.first
 import org.junit.Rule
 import org.junit.Test
@@ -16,6 +19,7 @@ class ScannerUiTest {
         compose.onNode(hasSetTextAction() and hasText("Document name")).performTextInput(testTitle)
         compose.onNodeWithText("Save").performClick()
         compose.waitUntil(10000) { compose.onAllNodesWithText("Add pages", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        assertTrue("Add pages needs a native accessibility label",UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).hasObject(By.desc("Add pages")))
         compose.onNodeWithText("Add pages", useUnmergedTree = true).performClick()
         compose.waitUntil(10000) { compose.onAllNodesWithContentDescription("Capture page").fetchSemanticsNodes().isNotEmpty() }
         // Camera provider readiness is not evidence of a rendered preview frame.

@@ -22,6 +22,7 @@ import kotlinx.coroutines.*
     val focus=androidx.compose.ui.platform.LocalFocusManager.current
     val work by remember(email) { WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow("folio-cloud-purge-$email") }.collectAsStateWithLifecycle(emptyList())
     val executing=work.any { it.state==WorkInfo.State.RUNNING }
+    val authorized by repository.inspectionAuthorized.collectAsStateWithLifecycle()
     var stage by rememberSaveable(email) { mutableIntStateOf(0) }
     var typed by rememberSaveable(email) { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -51,7 +52,10 @@ import kotlinx.coroutines.*
             }
         } else Text("Automatic backup remains paused. Back Up Now can intentionally create a new backup.",style=MaterialTheme.typography.bodySmall)
     }
-    if(receipt?.state!="cloud-purged") TextButton(onClick=inspect,enabled=!busy && !executing) { Text("Authorize safe folder inspection") }
+    LaunchedEffect(email) { action { repository.refreshInspectionAuthorization() } }
+    if(authorized==true) Text("Folder Inspection Authorized",color=MaterialTheme.colorScheme.primary,style=MaterialTheme.typography.bodyMedium)
+    else if(authorized==false && receipt?.state!="cloud-purged") TextButton(onClick=inspect,enabled=!busy && !executing) { Text("Authorize safe folder inspection") }
+    else if(receipt?.state!="cloud-purged") TextButton(onClick={ action { repository.refreshInspectionAuthorization() } },enabled=!busy) { Text(if(busy) "Checking folder inspection…" else "Check folder inspection access") }
     TextButton(onClick={ typed=""; stage=1 },enabled=!busy && !pending,colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error)) { Text("Delete All Cloud Backup") }
     if(error.isNotEmpty()) Text(error,color=MaterialTheme.colorScheme.error)
     if(stage==1) AlertDialog(onDismissRequest={ stage=0 },title={ Text("Delete all cloud backup?") },text={ Text("Permanently delete all Folio backup data in Google Drive for $email. Your local Folio documents and Android files will not be deleted. Unrelated Drive files are kept. This cannot be undone.") },confirmButton={ TextButton(onClick={ stage=2 }) { Text("Continue") } },dismissButton={ TextButton(onClick={ stage=0 }) { Text("Cancel") } })

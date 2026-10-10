@@ -9,6 +9,8 @@ class FolioApplication : Application() {
     @javax.inject.Inject lateinit var ocr: dev.folio.scanner.ocr.OcrRepository
     override fun onCreate() {
         super.onCreate()
+        val process=if(android.os.Build.VERSION.SDK_INT>=28) getProcessName() else java.io.File("/proc/self/cmdline").readText().trimEnd('\u0000')
+        if(process!=packageName) return
         backups.start()
         ocr.start()
         dev.folio.scanner.data.TrashCleanupWorker.schedule(this)

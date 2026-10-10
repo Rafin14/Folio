@@ -2,74 +2,39 @@
 
 ## Requirements
 
-- JDK **21** (used for release-package verification; Android bytecode targets Java 17).
-- Android SDK platform **36**, build-tools **36.0.0**, and platform-tools.
-- Internet access for the first Gradle/dependency download.
-- Android **8.0 / API 26+** device or emulator to run the app.
+- JDK **21**; Android bytecode targets Java 17.
+- Android SDK platform **37**, build-tools **36.0.0**, and platform-tools.
+- NDK **27.2.12479018** and CMake **3.22.1**.
+- Internet access for the first dependency download.
+- Android **8.0 / API 26+** to run the app.
 
-The wrapper pins Gradle **9.6.0** with a distribution checksum; AGP is **9.4.1**. Use an Android Studio version supporting that AGP, or use the command line. No particular Android Studio release was verified for this package.
+The Gradle wrapper selects Gradle **9.6.0**. The project uses Android Gradle Plugin **9.4.1** and a single `:app` module.
 
-Download and extract the source archive, or clone the repository from its actual published GitHub URL. Open the directory containing `settings.gradle.kts` in Android Studio. There is only one module, `:app`.
+Open the directory containing `settings.gradle.kts` in Android Studio. Install the required SDK components through SDK Manager. Set `JAVA_HOME` to JDK 21 and `ANDROID_HOME` to the Android SDK, or let Android Studio configure the SDK path.
 
-## Local SDK configuration
+All scanner, OCR and layout models are bundled. See [Models & OCR](docs/MODELS.md).
 
-Point `JAVA_HOME` to your JDK 21 and `ANDROID_HOME` to your Android SDK. Android Studio may create a root `local.properties` with your `sdk.dir` instead. All paths must describe **your own** machine. `local.properties` is ignored by Git and is absent from this archive.
+## Build an APK
 
-If SDK components are missing, install them with Android Studio SDK Manager or:
-
-```text
-sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
-```
-
-Bundled scanner/OCR models and their dictionaries are already included; no model download is required for this source package. See [model hashes](docs/MODELS.md).
-
-## Debug build and checks
-
-Windows PowerShell, from the project root:
+From the project root on Windows:
 
 ```powershell
-.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
-.\scripts\check.ps1
+.\gradlew.bat :app:assembleDebug
 ```
 
-Linux/macOS:
+On Linux or macOS:
 
 ```sh
 chmod +x gradlew
-./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+./gradlew :app:assembleDebug
 ```
 
-These commands work without Google credentials. Missing or placeholder `folio.google.webClientId` values leave Google sign-in unavailable with a configuration message; no fabricated credential is used.
+APKs are written to `app/build/outputs/apk/debug/`. Choose the APK matching the device architecture: `arm64-v8a`, `armeabi-v7a`, `x86`, or `x86_64`.
 
-## Install and device tests
+Open the APK on the Android device to install it. Android may ask permission to install apps from the browser or file manager.
 
-Enable USB debugging, or start an API 26+ emulator. APKs are split into `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64` under `app/build/outputs/apk/debug/`. Check `adb shell getprop ro.product.cpu.abi`; choose the matching APK.
+Google Drive Backup requires a configured Google OAuth client. Building without one leaves sign-in unavailable; the offline tools remain usable.
 
-```text
-adb install -r app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
-```
+## License
 
-For an x86_64 emulator substitute `app-x86_64-debug.apk`. Do not overwrite a personally used Folio installation for automated tests; use a dedicated emulator.
-
-```powershell
-.\gradlew.bat :app:assembleDebugAndroidTest :app:connectedDebugAndroidTest
-# Equivalent existing verification script with device tests:
-.\scripts\check.ps1 -Device
-```
-
-See [TESTING.md](docs/TESTING.md) for coverage and current failures/limitations. Tests may use Android file-picker or print-preview services and create temporary sample data.
-
-## Optional Google Drive configuration
-
-Follow [GOOGLE_DRIVE.md](docs/GOOGLE_DRIVE_SETUP.md). Copy `local.properties.example` to ignored `local.properties`, preserve/add your SDK settings if needed, and set **your public Web OAuth Client ID** as `folio.google.webClientId`. Register the Android client for `dev.folio.scanner` and your signing certificate. Do not add a Web client secret.
-
-For the owner's distributed APK, Google accounts must be approved OAuth test users; a self-built app uses the builder's own configuration.
-
-## Release signing
-
-```powershell
-.\gradlew.bat :app:assembleRelease
-```
-
-The current release build is **unsigned**; this archive intentionally contains no keystore or signing credentials. To distribute an APK, configure signing privately with your own key using Android Studio's signed APK workflow or a local Gradle configuration. Do not publish the key/passwords. Preserve AGPL corresponding source and third-party notices. This source archive does not create, sign or publish a GitHub APK release.
-
+Folio uses [GNU AGPL v3](LICENSE). Corresponding iText source archives are included in [third-party-sources](third-party-sources), with dependency notices in [Licenses & credits](docs/THIRD_PARTY.md).

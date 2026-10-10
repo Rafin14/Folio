@@ -25,6 +25,7 @@ interface DriveAuth {
     suspend fun signOut(email:String)
     suspend fun inspectForPurge(email:String):DriveAuthorization = connect(email)
     suspend fun purgeToken(email:String):String = token(email)
+    suspend fun inspectionAuthorized(email:String):Boolean = try { purgeToken(email); true } catch(_:BackupAuthRequired) { false }
 }
 
 @Singleton
@@ -48,6 +49,13 @@ class GoogleAuthManager @Inject constructor(@ApplicationContext private val cont
     override suspend fun inspectForPurge(email:String):DriveAuthorization {
         val result=client.authorize(request(email,true)).await()
         return DriveAuthorization(if(result.hasResolution()) result.pendingIntent else null)
+    }
+    override suspend fun inspectionAuthorized(email:String):Boolean {
+        val result=try { client.authorize(request(email,true)).await() } catch(error:com.google.android.gms.common.api.ApiException) {
+            if(error.statusCode==com.google.android.gms.common.api.CommonStatusCodes.NETWORK_ERROR || error.statusCode==com.google.android.gms.common.api.CommonStatusCodes.TIMEOUT) throw java.io.IOException("Cannot verify folder inspection while Google authorization is unavailable.")
+            return false
+        }
+        return !result.hasResolution() && !result.accessToken.isNullOrEmpty() && DRIVE_FILE in result.grantedScopes && "https://www.googleapis.com/auth/drive.metadata.readonly" in result.grantedScopes
     }
     override suspend fun purgeToken(email:String):String {
         val result=try { client.authorize(request(email,true)).await() } catch(error:com.google.android.gms.common.api.ApiException) {

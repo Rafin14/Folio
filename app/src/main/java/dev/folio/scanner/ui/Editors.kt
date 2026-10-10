@@ -2,6 +2,7 @@
 
 package dev.folio.scanner.ui
 
+import androidx.compose.animation.togetherWith
 import android.graphics.Bitmap
 import androidx.compose.foundation.*
 import androidx.compose.animation.animateContentSize
@@ -87,18 +88,18 @@ fun DocumentEditor(doc: Document?, model: LibraryViewModel, back: () -> Unit, sc
         if(selected.isNotEmpty()) IconButton(onClick={ deleting=true }) { Icon(Icons.Outlined.Delete,"Delete selected pages") }
         if(doc!=null) Box {
             IconButton(onClick={ documentMenu=true }) { Icon(Icons.Outlined.MoreVert,"Document actions") }
-            DropdownMenu(documentMenu,{ documentMenu=false }) {
+            FolioOverflowMenu(documentMenu,{ documentMenu=false },if(selected.isEmpty()) doc.title else "${selected.size} selected") {
                 if(selected.isEmpty()) {
-                    DropdownMenuItem(text={ Text("Export PDF") },onClick={ documentMenu=false; sharing=true },enabled=pages.isNotEmpty())
+                    FolioMenuItem(label="Export PDF",onClick={ documentMenu=false; sharing=true },enabled=pages.isNotEmpty())
                     MenuSeparator()
-                    DropdownMenuItem(text={ Text("Extract Text") },onClick={ documentMenu=false; textPage=null; textScreen=true },enabled=pages.isNotEmpty())
+                    FolioMenuItem(label="Extract Text",onClick={ documentMenu=false; textPage=null; textScreen=true },enabled=pages.isNotEmpty())
                     MenuSeparator()
-                    DropdownMenuItem(text={ Text(if(doc.favorite) "Remove favorite" else "Favorite") },onClick={ documentMenu=false; model.run { model.repository.favorite(doc.id) } })
+                    FolioMenuItem(label=if(doc.favorite) "Remove favorite" else "Favorite",onClick={ documentMenu=false; model.run { model.repository.favorite(doc.id) } })
                 } else {
-                    DropdownMenuItem(text={ Text("Apply filter") },onClick={ documentMenu=false; filtering=true })
+                    FolioMenuItem(label="Apply filter",onClick={ documentMenu=false; filtering=true })
                 }
                 MenuSeparator()
-                DropdownMenuItem(text={ Text("Select all pages") },onClick={ documentMenu=false; selected=pages.map { it.id } },enabled=pages.isNotEmpty())
+                FolioMenuItem(label="Select all pages",onClick={ documentMenu=false; selected=pages.map { it.id } },enabled=pages.isNotEmpty())
             }
         }
     }) },bottomBar={
@@ -107,7 +108,7 @@ fun DocumentEditor(doc: Document?, model: LibraryViewModel, back: () -> Unit, sc
                 Icon(Icons.Outlined.Print,null); Spacer(Modifier.width(8.dp)); Text("Print")
             }
             Spacer(Modifier.weight(1f))
-            if(doc!=null && selected.isEmpty()) ExtendedFloatingActionButton(onClick=scan,icon={ Icon(Icons.Outlined.CameraAlt,null) },text={ Text("Add pages") })
+            if(doc!=null && selected.isEmpty()) ExtendedFloatingActionButton(onClick=scan,icon={ Icon(Icons.Outlined.CameraAlt,null) },text={ Text("Add pages") },modifier=Modifier.semantics { contentDescription="Add pages" })
         }
     }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
@@ -138,12 +139,10 @@ fun DocumentEditor(doc: Document?, model: LibraryViewModel, back: () -> Unit, sc
         }
     }
     if (sharing && doc != null) DocumentShareSheet(doc, scopedPages, model) { sharing = false }
-    pageAction?.let { page -> ModalBottomSheet(onDismissRequest = { pageAction = null }) {
-        Column(Modifier.verticalScroll(rememberScrollState())) {
-        Text(page.label(), style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(24.dp))
+    pageAction?.let { page -> FolioOverflowMenu(true,{pageAction=null},page.label()) {
         listOf("Edit", "Rename", "Extract Text", "Rotate", "Duplicate", "Move earlier", "Move later", "Replace / retake", "Delete").forEachIndexed { index, action ->
             if(index>0) MenuSeparator()
-            TextButton(onClick = {
+            FolioMenuItem(action,onClick = {
                 pageAction = null
                 when (action) {
                     "Edit" -> edit(page.id)
@@ -156,15 +155,13 @@ fun DocumentEditor(doc: Document?, model: LibraryViewModel, back: () -> Unit, sc
                     "Replace / retake" -> replace(page.id)
                     "Delete" -> { selected = listOf(page.id); deleting = true }
                 }
-            }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), enabled = when(action) { "Move earlier" -> page.position > 0; "Move later" -> page.position < pages.lastIndex; else -> true }) { Text(action, Modifier.fillMaxWidth()) }
-        }
-        Spacer(Modifier.height(24.dp))
+            }, enabled = when(action) { "Move earlier" -> page.position > 0; "Move later" -> page.position < pages.lastIndex; else -> true })
         }
     } }
     if(printing && doc!=null) DocumentPrintSheet(doc,scopedPages,model,selectionOnly=selected.isNotEmpty()) { printing=false }
     renaming?.let { page -> NameDialog("Rename page","Page name",page.pageName.orEmpty(),busy,{ renaming=null },optional=true) { name -> model.run { model.repository.renamePage(page.id,name); renaming=null } } }
     if (deleting && doc != null) AlertDialog(onDismissRequest = { deleting = false }, title = { Text("Delete ${selected.size} pages?") }, text = { Text("Selected pages will move to Recycle Bin. You can restore them to this document.") }, confirmButton = {
-        TextButton(onClick = { model.run { model.repository.deletePages(doc.id, selected.toSet()); selected = emptyList(); deleting = false } }) { Text("Move to Recycle Bin") }
+        TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick = { model.run { model.repository.deletePages(doc.id, selected.toSet()); selected = emptyList(); deleting = false } }) { Text("Move to Recycle Bin") }
     }, dismissButton = { TextButton(onClick = { deleting = false }) { Text("Cancel") } })
     if (filtering) AlertDialog(onDismissRequest = { filtering = false }, title = { Text("Apply to ${selected.size} pages") }, text = { Column {
         Enhancement.presets.forEach { preset -> TextButton(onClick = { model.run { selected.forEach { model.repository.edit(it, enhancement = Enhancement(preset)) }; filtering = false; selected = emptyList() } }) { Text(preset) } }
@@ -172,7 +169,9 @@ fun DocumentEditor(doc: Document?, model: LibraryViewModel, back: () -> Unit, sc
 }
 
 @Composable
-fun PageEditor(pageId: String, model: LibraryViewModel, back: () -> Unit, crop: (String) -> Unit, draft: Boolean = false, retake: (() -> Unit)? = null, accepted: ((String) -> Unit)? = null) {
+fun PageEditor(initialPageId: String, model: LibraryViewModel, back: () -> Unit, crop: (String) -> Unit, draft: Boolean = false, retake: (() -> Unit)? = null, accepted: ((String) -> Unit)? = null) {
+    var pageId by rememberSaveable(initialPageId) { mutableStateOf(initialPageId) }
+    var swipeDirection by remember { mutableIntStateOf(1) }
     var sharing by rememberSaveable { mutableStateOf(false) }
     var sizeSheet by rememberSaveable { mutableStateOf(false) }
     var size by rememberSaveable(pageId) { mutableStateOf("Original") }
@@ -181,18 +180,18 @@ fun PageEditor(pageId: String, model: LibraryViewModel, back: () -> Unit, crop: 
     var paperHeight by rememberSaveable(pageId) { mutableDoubleStateOf(0.0) }
     var paperLoaded by rememberSaveable(pageId) { mutableStateOf(false) }
     val layout=PageLayout(size,fitting,paperWidth,paperHeight)
-    var editorPage by remember { mutableStateOf<Page?>(null) }
+    var editorPage by remember(pageId) { mutableStateOf<Page?>(null) }
     var adjustments by rememberSaveable { mutableStateOf(false) }
     var before by rememberSaveable { mutableStateOf(false) }
-    var source by remember { mutableStateOf<Bitmap?>(null) }
-    var preview by remember { mutableStateOf<Bitmap?>(null) }
+    var source by remember(pageId) { mutableStateOf<Bitmap?>(null) }
+    var preview by remember(pageId) { mutableStateOf<Bitmap?>(null) }
     var configValue by rememberSaveable(pageId) { mutableStateOf("") }
     var rotation by rememberSaveable(pageId) { mutableIntStateOf(-1) }
     val config = Enhancement.decode(configValue)
-    var processing by remember { mutableStateOf(false) }
-    var failed by remember { mutableStateOf(false) }
-    var loadingSource by remember { mutableStateOf(true) }
-    var renderedInput by remember { mutableStateOf<List<Any?>>(emptyList()) }
+    var processing by remember(pageId) { mutableStateOf(false) }
+    var failed by remember(pageId) { mutableStateOf(false) }
+    var loadingSource by remember(pageId) { mutableStateOf(true) }
+    var renderedInput by remember(pageId) { mutableStateOf<List<Any?>>(emptyList()) }
     val busy by model.busy.collectAsStateWithLifecycle()
     var reload by remember { mutableIntStateOf(0) }
     androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_RESUME) { loadingSource=true; reload++ }
@@ -234,10 +233,25 @@ fun PageEditor(pageId: String, model: LibraryViewModel, back: () -> Unit, crop: 
     var editorPrinting by rememberSaveable { mutableStateOf(false) }
     val printDocument by produceState<Document?>(null,editorPage?.documentId) { value=editorPage?.let { model.repository.dao.document(it.documentId) } }
     val printPages by remember(editorPage?.documentId) { editorPage?.let { model.repository.dao.observePages(it.documentId) } ?: kotlinx.coroutines.flow.flowOf(emptyList<Page>()) }.collectAsStateWithLifecycle(emptyList())
-    Scaffold(topBar = { TopAppBar(title = { Text(if (draft) "Edit scan" else "Edit page",maxLines=1,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis) }, navigationIcon = { IconButton(onClick = back, enabled = !busy) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Cancel editing") } }, actions = {
+    val pageIndex=printPages.indexOfFirst { it.id==pageId }
+    fun swipePage(direction:Int) {
+        if(draft || !canSave || processing || adjustments || sizeSheet || sharing || editorPrinting) return
+        val target=printPages.getOrNull(pageIndex+direction) ?: return
+        model.run {
+            val persisted=editorPage ?: return@run
+            if(persisted.enhancement!=config.encode() || persisted.rotation!=rotation || persisted.layout()!=layout)
+                model.repository.edit(pageId,enhancement=config,rotation=rotation,layout=layout)
+            swipeDirection=direction
+            pageId=target.id
+        }
+    }
+    Scaffold(topBar = { TopAppBar(title = { Column {
+        Text(if(draft) "Edit scan" else "Edit page",maxLines=1,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+        if(!draft && pageIndex>=0) Text("${pageIndex+1} of ${printPages.size}",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+    } }, navigationIcon = { IconButton(onClick = back, enabled = !busy) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Cancel editing") } }, actions = {
         if(!draft) IconButton(onClick={ model.run { model.repository.edit(pageId,enhancement=config,rotation=rotation,layout=layout); editorPage=model.repository.dao.page(pageId); sharing=true } },enabled=canSave) { Icon(Icons.Outlined.Share,"Share page") }
         TextButton(onClick = { configValue = Enhancement().encode(); rotation = 0 }) { Text("Reset") }
-        if (!draft) TextButton(onClick = ::save, enabled = canSave) { Text("Save") }
+        if (!draft) FilledTonalButton(onClick = ::save, enabled = canSave) { Text("Save") }
     }) }, bottomBar = {
         if(!draft) Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal=16.dp,vertical=8.dp)) {
             FilledTonalButton(onClick={ editorPrinting=true },enabled=printDocument!=null && printPages.isNotEmpty(),modifier=Modifier.semantics { contentDescription="Print document" }) { Icon(Icons.Outlined.Print,null); Spacer(Modifier.width(8.dp)); Text("Print") }
@@ -249,7 +263,12 @@ fun PageEditor(pageId: String, model: LibraryViewModel, back: () -> Unit, crop: 
             @Composable fun canvas(canvasModifier: Modifier) {
             Box(canvasModifier.contentOutline().background(MaterialTheme.colorScheme.surfaceContainer), contentAlignment = Alignment.Center) {
                 val visible = if(before) source else preview
-                visible?.let { key(adjustments) { DocumentCanvas(it, if(before) "Original page preview" else "Enhanced page preview", Modifier.fillMaxSize(), if(before) rotation.coerceAtLeast(0) else 0) } }
+                androidx.compose.animation.AnimatedContent(pageId,transitionSpec={
+                    (androidx.compose.animation.slideInHorizontally { it*swipeDirection/4 } + androidx.compose.animation.fadeIn()) togetherWith
+                        (androidx.compose.animation.slideOutHorizontally { -it*swipeDirection/4 } + androidx.compose.animation.fadeOut())
+                },label="Page navigation") { displayedId ->
+                    if(displayedId==pageId) visible?.let { key(pageId,adjustments) { DocumentCanvas(it, if(before) "Original page preview" else "Enhanced page preview", Modifier.fillMaxSize(), if(before) rotation.coerceAtLeast(0) else 0, if(draft) null else ::swipePage) } }
+                }
                 if(visible!=null) FilterChip(before,{ before=!before },label={ Text(if(before) "Before" else "After") },colors=FilterChipDefaults.filterChipColors(containerColor=MaterialTheme.colorScheme.surfaceContainer.copy(alpha=.94f)),modifier=Modifier.align(Alignment.TopEnd).padding(8.dp))
                 if (processing || source == null && !failed) CircularProgressIndicator()
                 if (failed) Text("Page unavailable")

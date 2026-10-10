@@ -62,5 +62,5 @@ interface DocumentDao {
     @Query("DELETE FROM pdfs WHERE id = :id") suspend fun deletePdf(id: String)
 }
 
-@Database(entities = [Document::class, Folder::class, Page::class, OcrResult::class, OcrSearchIndex::class, Annotation::class, PdfAsset::class, BackupRecord::class], version = 7, exportSchema = true)
+@Database(entities = [Document::class, Folder::class, Page::class, OcrResult::class, OcrSearchIndex::class, Annotation::class, PdfAsset::class, BackupRecord::class], version = 8, exportSchema = true)
 abstract class FolioDatabase : RoomDatabase() { abstract fun documents(): DocumentDao }

@@ -31,7 +31,7 @@ class TrashMigrationTest {
             db.execSQL("INSERT INTO ocr (pageId,text,modifiedAt) VALUES ('page','Preserved OCR',1)")
             db.version=6
         }
-        val room=Room.databaseBuilder(context,FolioDatabase::class.java,name).addMigrations(StorageModule.migration6To7).build()
+        val room=Room.databaseBuilder(context,FolioDatabase::class.java,name).addMigrations(StorageModule.migration6To7, StorageModule.migration7To8).build()
         try { val p=room.documents().page("page")!!; assertNull(p.trashedAt); assertNull(p.trashPosition); assertEquals("original",p.originalImageUri); assertEquals("Preserved OCR",room.documents().ocr("page")!!.text) }
         finally { room.close(); context.deleteDatabase(name) }
     }
@@ -55,7 +55,7 @@ class TrashMigrationTest {
             db.execSQL("INSERT INTO pages VALUES ('page','doc',0,'/original.jpg','/processed.jpg','/thumb.jpg',600,800,90,'','Grayscale')")
             db.execSQL("INSERT INTO pdfs VALUES ('pdf','doc','operation','PDF','/pdf.pdf',1,3,0)")
         }
-        fun open()=Room.databaseBuilder(context,FolioDatabase::class.java,name).addMigrations(StorageModule.migration2To3, StorageModule.migration3To4, StorageModule.migration4To5, StorageModule.migration5To6, StorageModule.migration6To7).build()
+        fun open()=Room.databaseBuilder(context,FolioDatabase::class.java,name).addMigrations(StorageModule.migration2To3, StorageModule.migration3To4, StorageModule.migration4To5, StorageModule.migration5To6, StorageModule.migration6To7, StorageModule.migration7To8).build()
         var room=open()
         try {
             val dao=room.documents(); val original=dao.document("doc")!!

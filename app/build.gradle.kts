@@ -1,4 +1,9 @@
 import java.util.Properties
+import java.io.File
+import java.security.KeyStore
+import java.security.PrivateKey
+import java.security.MessageDigest
+import java.security.cert.X509Certificate
 
 plugins {
     id("com.android.application")
@@ -6,15 +11,59 @@ plugins {
     id("com.google.devtools.ksp")
     id("com.google.dagger.hilt.android")
 }
+val privateSigningFile = rootProject.file("keystore.properties")
+val unsignedRelease = providers.gradleProperty("folio.unsignedRelease").orNull == "true"
+val privateSigning = Properties()
+var privateSigningReadFailed = false
+if (privateSigningFile.isFile) {
+    try { privateSigningFile.inputStream().use(privateSigning::load) }
+    catch (_: Exception) { privateSigningReadFailed = true }
+}
+val signingKeys = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+val signingComplete = signingKeys.all { !privateSigning.getProperty(it).isNullOrBlank() }
+val validatePrivateReleaseSigning = tasks.register("validatePrivateReleaseSigning") {
+    group = "verification"
+    description = "Validate private local release credentials without printing them."
+    doLast {
+        fun invalid(reason: String): Nothing = throw GradleException("Release signing: $reason See docs/RELEASE_SIGNING.md. Debug builds remain available.")
+        if (!privateSigningFile.isFile) invalid("Missing root keystore.properties.")
+        if (privateSigningReadFailed) invalid("Cannot read keystore.properties.")
+        if (!signingComplete || signingKeys.any { privateSigning.getProperty(it).startsWith("<") }) invalid("Required signing properties are missing or still placeholders.")
+        val path = File(privateSigning.getProperty("storeFile"))
+        if (!path.isAbsolute || !path.isFile) invalid("storeFile must identify an existing absolute keystore path outside the repository.")
+        if (path.canonicalFile.toPath().startsWith(rootProject.projectDir.canonicalFile.toPath())) invalid("Keep the release keystore outside the repository.")
+        val storePassword = privateSigning.getProperty("storePassword").toCharArray()
+        val keyPassword = privateSigning.getProperty("keyPassword").toCharArray()
+        try {
+            val store = try { KeyStore.getInstance(path, storePassword) }
+            catch (_: Exception) { invalid("Cannot open the keystore. Check its format and store password locally.") }
+            val alias = privateSigning.getProperty("keyAlias")
+            if (!store.isKeyEntry(alias)) invalid("The configured alias has no private-key entry.")
+            val key = try { store.getKey(alias, keyPassword) }
+            catch (_: Exception) { invalid("Cannot unlock the signing key. Check its key password locally.") }
+            if (key !is PrivateKey) invalid("The configured entry is not a private signing key.")
+            val certificate = store.getCertificate(alias) as? X509Certificate ?: invalid("A signing certificate is required.")
+            try { certificate.checkValidity() } catch (_: Exception) { invalid("The signing certificate is not currently valid.") }
+            if (alias.equals("androiddebugkey", true) || certificate.subjectX500Principal.name.contains("CN=Android Debug", true)) invalid("A debug key cannot be used for release signing.")
+            val sha1 = MessageDigest.getInstance("SHA-1").digest(certificate.encoded).joinToString(":") { "%02X".format(it.toInt() and 0xff) }
+            if (sha1 != "93:3B:CF:4C:3B:98:75:80:5B:F9:A8:DF:05:74:1F:79:DD:85:50:75") invalid("The signing certificate does not match the required Folio Android OAuth identity. Use the original matching keystore; generating another key cannot reproduce it.")
+        } finally { storePassword.fill('\u0000'); keyPassword.fill('\u0000') }
+    }
+}
+tasks.configureEach {
+    if (!unsignedRelease && (name == "validateSigningRelease" || name.contains("Release") && listOf("package", "sign", "bundle", "assemble").any(name::startsWith))) {
+        dependsOn(validatePrivateReleaseSigning)
+    }
+}
 android {
     namespace = "dev.folio.scanner"
-    compileSdk = 36
+    compileSdk = 37
     defaultConfig {
         applicationId = "dev.folio.scanner"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "2.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         val local = Properties().apply { rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) } }
         val webClient = local.getProperty("folio.google.webClientId", "").trim()
@@ -23,21 +72,43 @@ android {
     }
     buildFeatures { compose = true; buildConfig = true }
     androidResources { noCompress += "onnx" }
+    ndkVersion = "27.2.12479018"
+    externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
     sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")
     splits {
         abi {
             isEnable = true
             reset()
-            include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
-            isUniversalApk = false
+            if (providers.gradleProperty("folio.releaseArmOnly").orNull == "true") {
+                include("armeabi-v7a", "arm64-v8a")
+                isUniversalApk = true
+            } else {
+                include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+                isUniversalApk = false
+            }
         }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    if (providers.gradleProperty("folio.releaseArmOnly").orNull == "true") {
+        // Split selection alone does not filter dependency libraries in the universal APK.
+        packaging { jniLibs.excludes += setOf("**/x86/**", "**/x86_64/**") }
+    }
+    signingConfigs {
+        create("privateRelease") {
+            if (signingComplete && !privateSigningReadFailed) {
+                storeFile = File(privateSigning.getProperty("storeFile"))
+                storePassword = privateSigning.getProperty("storePassword")
+                keyAlias = privateSigning.getProperty("keyAlias")
+                keyPassword = privateSigning.getProperty("keyPassword")
+            }
+        }
+    }
     buildTypes {
         release {
+            signingConfig = if (unsignedRelease) null else signingConfigs.getByName("privateRelease")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -71,6 +142,7 @@ dependencies {
     implementation("org.opencv:opencv:4.14.0")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.30.0")
     implementation("com.itextpdf.android:kernel-android:9.8.0")
+    implementation("io.legere:pdfiumandroid:2.0.3")
     implementation("com.itextpdf.android:bouncy-castle-adapter-android:9.8.0")
     implementation("androidx.work:work-runtime-ktx:2.12.0")
     implementation("androidx.credentials:credentials:1.6.0")

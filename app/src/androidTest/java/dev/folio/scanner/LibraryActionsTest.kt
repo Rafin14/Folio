@@ -91,7 +91,7 @@ class LibraryActionsTest {
             compose.onNodeWithText("Delete",substring=false).performClick()
             compose.waitUntil(15000) { runBlocking { repo.dao.document(ids[0])!!.trashedAt!=null } }
             // The compact library header is intentionally hidden while search has keyboard focus.
-            UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressBack()
+            compose.onNodeWithContentDescription("Close search").performClick()
             compose.waitUntil(15000) { compose.onAllNodesWithContentDescription("Recycle Bin").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithContentDescription("Recycle Bin").performClick(); waitText("$prefix 1")
             compose.activityRule.scenario.recreate(); waitText("$prefix 1")

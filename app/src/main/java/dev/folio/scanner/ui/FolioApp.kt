@@ -22,6 +22,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -49,6 +50,13 @@ fun FolioApp(model: LibraryViewModel) {
     val preparingPdf by model.preparingPdf.collectAsStateWithLifecycle()
     val nav = rememberNavController()
     val snack = remember { SnackbarHostState() }
+    fun openDocument(id:String,match:String="") {
+        if(state.documents.find {it.id==id}?.importedPdf==true) model.run {
+            val session=model.utility.openManaged(id)
+            val index=if(match.isEmpty()) 0 else model.repository.dao.page(match)?.position ?: 0
+            nav.navigate("pdf-import/$session?page=$index")
+        } else nav.navigate(if(match.isEmpty()) "document/$id" else "document/$id?match=$match")
+    }
     LaunchedEffect(error) { error?.let { snack.showSnackbar(it); model.error.value = null } }
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route.orEmpty()
@@ -61,8 +69,8 @@ fun FolioApp(model: LibraryViewModel) {
                     exitTransition={ androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(100)) },
                     popEnterTransition={ androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(160)) },
                     popExitTransition={ androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(100)) }) {
-                    composable("library") {
-                        LibraryScreen(state, busy, model, open = { nav.navigate("document/$it") }, settings = { nav.navigate("settings") }, recycle = { nav.navigate("recycle") }, openPage={ doc,page -> nav.navigate("document/$doc?match=$page") },text={ nav.navigate("text/$it") }, workspace={ nav.navigate("pdf-workspace") })
+                    composable("library",exitTransition={ if(targetState.destination.route=="pdf-workspace") androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(220)) { it } else androidx.compose.animation.fadeOut() },popEnterTransition={ if(initialState.destination.route=="pdf-workspace") androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(220)) { it } else androidx.compose.animation.fadeIn() }) {
+                        LibraryScreen(state, busy, model, open = { openDocument(it) }, settings = { nav.navigate("settings") }, recycle = { nav.navigate("recycle") }, openPage={ doc,page -> openDocument(doc,page) },text={ nav.navigate("text/$it") }, workspace={ nav.navigate("pdf-workspace") }, importedPdf={ nav.navigate("pdf-import/$it") },review={ doc,draft -> nav.navigate("document/$doc"); nav.navigate("scan-edit/$draft") })
                     }
                     composable("recycle") { RecycleBinScreen(model) { nav.popBackStack() } }
                     composable("document/{id}?match={match}", arguments=listOf(androidx.navigation.navArgument("match") { defaultValue="" })) { entry ->
@@ -94,8 +102,11 @@ fun FolioApp(model: LibraryViewModel) {
                     composable("drive-backup") { BackupScreen(model.backups) { nav.popBackStack() } }
                     composable("text/{id}") { entry -> ExtractedTextScreen(requireNotNull(entry.arguments?.getString("id")),null,model) { nav.popBackStack() } }
                     composable("ocr-settings") { OcrSettingsScreen(model) { nav.popBackStack() } }
-                    composable("pdf-workspace") {
+                    composable("pdf-workspace",enterTransition={ androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(220)) { -it } },popExitTransition={ androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(220)) { -it } }) {
                         PdfWorkspace(null, model, { nav.popBackStack() }, { nav.navigate("pdf/$it") })
+                    }
+                    composable("pdf-import/{session}?page={page}",arguments=listOf(androidx.navigation.navArgument("page") {type=androidx.navigation.NavType.IntType;defaultValue=0})) { entry ->
+                        PdfWorkspace(null,model,{ nav.popBackStack() },{},initialSession=entry.arguments!!.getString("session").orEmpty(),importIntoFolio=true,initialPage=entry.arguments!!.getInt("page"))
                     }
 
                 }
@@ -109,12 +120,22 @@ fun FolioApp(model: LibraryViewModel) {
 }
 
 @Composable
-private fun LibraryScreen(state: LibraryState, busy: Boolean, model: LibraryViewModel, open: (String) -> Unit, settings: () -> Unit, recycle: () -> Unit,openPage:(String,String)->Unit,text:(String)->Unit, workspace:()->Unit) {
+private fun LibraryScreen(state: LibraryState, busy: Boolean, model: LibraryViewModel, open: (String) -> Unit, settings: () -> Unit, recycle: () -> Unit,openPage:(String,String)->Unit,text:(String)->Unit, workspace:()->Unit,importedPdf:(String)->Unit,review:(String,String)->Unit) {
     var selection by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var query by rememberSaveable { mutableStateOf("") }
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var folder by rememberSaveable { mutableStateOf<String?>(null) }
     val context = LocalContext.current
+    var importUris by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var importPdf by rememberSaveable { mutableStateOf(false) }
+    var importPassword by remember { mutableStateOf("") }
+    val importer=androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if(uris.isNotEmpty()) {
+            val pdfs=uris.filter { uri -> context.contentResolver.getType(uri)=="application/pdf" || model.utility.name(uri).endsWith(".pdf",true) }
+            if(pdfs.isNotEmpty() && uris.size!=1) model.error.value="Choose one PDF, or several images."
+            else { importUris=uris.map { it.toString() }; importPdf=pdfs.isNotEmpty() }
+        }
+    }
     val prefs = remember { context.getSharedPreferences("appearance",0) }
     var grid by rememberSaveable { mutableStateOf(prefs.getBoolean("libraryGrid",true)) }
     var searching by rememberSaveable { mutableStateOf(false) }
@@ -175,12 +196,14 @@ private fun LibraryScreen(state: LibraryState, busy: Boolean, model: LibraryView
             IconButton(onClick = settings) { Icon(Icons.Outlined.Settings, "Settings") }
         }
     }, bottomBar = {
-        if(!keyboardOpen && selection.isEmpty()) Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal=16.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+        if(!keyboardOpen && selection.isEmpty()) Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal=16.dp,vertical=8.dp)) {
+        OutlinedButton(onClick={ importer.launch(arrayOf("image/*","application/pdf")) },enabled=!busy,modifier=Modifier.fillMaxWidth()) { Icon(Icons.Outlined.FileOpen,null); Spacer(Modifier.width(8.dp)); Text("Import") }
+        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
             FilledTonalButton(onClick=workspace,shape=MaterialTheme.shapes.large,modifier=Modifier.weight(1f).heightIn(min=56.dp)) { Icon(Icons.Outlined.PictureAsPdf,null); Spacer(Modifier.width(8.dp)); Text("PDF workspace",maxLines=2) }
-            ExtendedFloatingActionButton(onClick={ create=true },icon={ Icon(Icons.Outlined.CameraAlt,null) },text={ Text("New document") },modifier=Modifier.weight(1f))
-        }
+            ExtendedFloatingActionButton(onClick={ create=true },icon={ Icon(Icons.Outlined.CameraAlt,null) },text={ Text("New document") },modifier=Modifier.weight(1f).semantics { contentDescription="New document" })
+        } }
     }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp).onPreInterceptKeyBeforeSoftKeyboard { event ->
+        Column(Modifier.fillMaxSize().padding(padding).workspaceSwipe(!busy && selection.isEmpty() && !activeSearch && !create && importUris.isEmpty() && selected==null && !newFolder,true,workspace).padding(horizontal = 16.dp).onPreInterceptKeyBeforeSoftKeyboard { event ->
             if(activeSearch && event.key==Key.Back) { if(event.type==KeyEventType.KeyUp) leaveSearch(); true } else false
         }) {
             if(!keyboardOpen && query.isNotBlank() && recognizing>0) Text("$recognizing pages still recognizing text…",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
@@ -255,22 +278,29 @@ private fun LibraryScreen(state: LibraryState, busy: Boolean, model: LibraryView
     }
     val chosen=selection.mapNotNull { id -> state.documents.find { it.id==id } }
     if(selectionShare && chosen.isNotEmpty()) MultiDocumentShareSheet(chosen,model) { selectionShare=false }
-    if(selectionDelete) AlertDialog(onDismissRequest={ selectionDelete=false },title={ Text("Move ${chosen.size} documents to Recycle Bin?") },text={ Text("Their pages stay available for restoration. Cloud backups remain until permanent deletion.") },confirmButton={ TextButton(onClick={ model.run { chosen.forEach { model.repository.delete(it.id) }; selectionDelete=false; selection=emptyList() } }) { Text("Move to Recycle Bin") } },dismissButton={ TextButton(onClick={ selectionDelete=false }) { Text("Cancel") } })
+    if(selectionDelete) AlertDialog(onDismissRequest={ selectionDelete=false },title={ Text("Move ${chosen.size} documents to Recycle Bin?") },text={ Text("Their pages stay available for restoration. Cloud backups remain until permanent deletion.") },confirmButton={ TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick={ model.run { chosen.forEach { model.repository.delete(it.id) }; selectionDelete=false; selection=emptyList() } }) { Text("Move to Recycle Bin") } },dismissButton={ TextButton(onClick={ selectionDelete=false }) { Text("Cancel") } })
     if (create) NameDialog("New document", "Document name", "", busy, { create = false },validate={ documentNameConflict(it,state.documents) }) { name -> model.run { val id = model.repository.create(name, folder); create = false; open(id) } }
+    if(importUris.isNotEmpty() && importPdf) AlertDialog(onDismissRequest={ importUris=emptyList(); importPassword="" },title={ Text("Review PDF before import") },text={ Column(verticalArrangement=Arrangement.spacedBy(8.dp)) { Text("Review your PDF, then choose Save to Folio. Leaving an unsaved import asks for confirmation. Your source file stays intact."); OutlinedTextField(importPassword,{ importPassword=it },label={ Text("Owner password, if needed") },visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation(),singleLine=true) } },confirmButton={ Button(enabled=!busy,onClick={ val uri=android.net.Uri.parse(importUris.single()); val secret=importPassword; model.run { val id=model.utility.open("edit",listOf(uri),secret,initialImport=true); importUris=emptyList(); importPassword=""; importedPdf(id) } }) { Text("Review PDF") } },dismissButton={ TextButton(onClick={ importUris=emptyList(); importPassword="" }) { Text("Cancel") } })
+    if(importUris.isNotEmpty() && !importPdf) NameDialog("Import images","Document name","",busy,{ importUris=emptyList() },validate={ documentNameConflict(it,state.documents) }) { name -> model.run {
+        val id=model.repository.create(name,folder); var first:String?=null
+        importUris.forEach { raw -> val uri=android.net.Uri.parse(raw); model.utility.grant(uri); context.contentResolver.openInputStream(uri)!!.use { val draft=model.repository.stageScan(id,it); if(first==null) first=draft } }
+        importUris=emptyList(); first?.let { review(id,it) }
+    } }
     if (newFolder) NameDialog("New folder", "Folder name", "", busy, { newFolder = false }) { name -> model.run { model.repository.createFolder(name); newFolder = false } }
     renameFolder?.let { item -> NameDialog("Rename folder", "Folder name", item.name, busy, { renameFolder = null }) { name -> model.run { model.repository.renameFolder(item, name); renameFolder = null } } }
     folderAction?.let { item ->
-        AlertDialog(onDismissRequest = { folderAction = null }, title = { Text(item.name) }, text = { Text("Deleting a folder keeps its documents in your library.") },
-            confirmButton = { TextButton(onClick = { model.run { model.repository.deleteFolder(item.id); folderAction = null } }) { Text("Delete folder") } },
-            dismissButton = { Row { TextButton(onClick = { renameFolder = item; folderAction = null }) { Text("Rename") }; TextButton(onClick = { folderAction = null }) { Text("Cancel") } } })
+        FolioOverflowMenu(true,{folderAction=null},item.name) {
+            FolioMenuItem("Rename",{renameFolder=item;folderAction=null})
+            MenuSeparator()
+            Text("Deleting this folder keeps its documents in your library.",Modifier.padding(16.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            FolioMenuItem("Delete folder",{model.run {model.repository.deleteFolder(item.id);folderAction=null}})
+        }
     }
     selected?.let { doc ->
-        if (action.isEmpty()) ModalBottomSheet(onDismissRequest = { selected = null }) {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-            Text(doc.title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(24.dp))
+        FolioOverflowMenu(action.isEmpty(),{selected=null},doc.title) {
             listOf("Open", "Extract Text", "Rename", "Print", "Share", "Duplicate", if (doc.favorite) "Remove favorite" else "Favorite", "Move to folder", "Delete").forEachIndexed { index, label ->
                 if(index>0) MenuSeparator()
-                TextButton(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),enabled=label!="Print" || doc.pageCount>0, onClick = {
+                FolioMenuItem(label,enabled=label!="Print" || doc.pageCount>0, onClick = {
                     when (label) {
                         "Open" -> { selected=null; open(doc.id) }
                         "Extract Text" -> { selected=null; text(doc.id) }
@@ -280,15 +310,13 @@ private fun LibraryScreen(state: LibraryState, busy: Boolean, model: LibraryView
                         "Favorite", "Remove favorite" -> model.run { model.repository.favorite(doc.id); selected = null }
                         else -> action = label
                     }
-                }) { Text(label, modifier = Modifier.fillMaxWidth()) }
-            }
-            Spacer(Modifier.height(24.dp))
+                })
             }
         }
         if (action == "Rename") NameDialog("Rename document", "Document name", doc.title, busy, { action = ""; selected=null },validate={ documentNameConflict(it,state.documents,doc.id) }) { name -> model.run { model.repository.rename(doc.id, name); selected = null; action = "" } }
         if (action == "Duplicate") NameDialog("Duplicate document", "Document name", doc.title.take(113)+" (copy)", busy, { action = ""; selected=null },validate={ documentNameConflict(it,state.documents) }) { name -> model.run { model.repository.duplicate(doc.id,name); selected=null; action="" } }
         if (action == "Delete") AlertDialog(onDismissRequest = { action = "" }, title = { Text("Move ${doc.title} to Recycle Bin?") }, text = { Text("Your pages and originals will be kept. You can restore this document from Recycle Bin.") },
-            confirmButton = { TextButton(onClick = { model.run { model.repository.delete(doc.id); selected = null; action = "" } }) { Text("Delete") } }, dismissButton = { TextButton(onClick = { action = ""; selected=null }) { Text("Cancel") } })
+            confirmButton = { TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick = { model.run { model.repository.delete(doc.id); selected = null; action = "" } }) { Text("Delete") } }, dismissButton = { TextButton(onClick = { action = ""; selected=null }) { Text("Cancel") } })
         if (action == "Move to folder") AlertDialog(onDismissRequest = { action = "" }, title = { Text("Move to folder") }, text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 TextButton(onClick = { model.run { model.repository.move(doc.id, null); selected = null; action = "" } }) { Text("No folder") }
@@ -321,6 +349,7 @@ private fun DocumentTile(doc: Document, model: LibraryViewModel, open: () -> Uni
             if (pages.isNotEmpty()) PageThumbnail(pages.first(),model,"Document preview",Modifier.fillMaxSize().padding(4.dp))
             else Icon(Icons.Outlined.Description, null, tint = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.size(40.dp))
             if (doc.favorite) Icon(Icons.Outlined.Star, "Favorite", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.align(Alignment.TopStart).padding(12.dp))
+            if(doc.importedPdf) PdfBadge(Modifier.align(Alignment.BottomStart).padding(8.dp))
             if(chosen) Icon(Icons.Outlined.CheckCircle,"Selected",tint=MaterialTheme.colorScheme.primary,modifier=Modifier.align(Alignment.TopStart).padding(8.dp))
             FilledTonalIconButton(onClick = actions, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp)) { Icon(Icons.Outlined.MoreVert, "Actions for ${doc.title}") }
         }
@@ -336,6 +365,7 @@ internal fun DocumentCover(doc: Document,model: LibraryViewModel,modifier: Modif
     Box(modifier,contentAlignment=Alignment.Center) {
         if(pages.isNotEmpty()) PageThumbnail(pages.first(),model,"Document preview",Modifier.fillMaxSize())
         else Icon(Icons.Outlined.Description,null,tint=MaterialTheme.colorScheme.outline)
+        if(doc.importedPdf) PdfBadge(Modifier.align(Alignment.BottomStart).padding(4.dp))
     }
 }
 

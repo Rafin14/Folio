@@ -1,0 +1,7 @@
+PP-DocLayoutV3 by PaddlePaddle, Apache License 2.0.
+Official model card: https://huggingface.co/PaddlePaddle/PP-DocLayoutV3
+Supplied ONNX IR10 export reused from Folio_PP-DocLayoutV3_experiment.
+SHA-256 d24809294b2f9f1a9a2767043a64df2714b66e5be056887be2233d1117d784f6
+Bundled model: models/layout/PP-DocLayoutV3.onnx (130,502,049 bytes).
+Folio adapts the experiment's preprocessing, decoding and provider profiling.
+The upstream model license is in PaddleOCR-Apache-2.0.txt.

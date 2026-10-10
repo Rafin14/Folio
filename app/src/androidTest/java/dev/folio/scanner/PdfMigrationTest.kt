@@ -36,7 +36,7 @@ class PdfMigrationTest {
             execSQL("INSERT INTO annotations VALUES ('note', 'page', 'note', 'Retained annotation')")
             }
         }
-        val room = Room.databaseBuilder(context, FolioDatabase::class.java, name).addMigrations(StorageModule.migration1To2, StorageModule.migration2To3, StorageModule.migration3To4, StorageModule.migration4To5, StorageModule.migration5To6, StorageModule.migration6To7).build()
+        val room = Room.databaseBuilder(context, FolioDatabase::class.java, name).addMigrations(StorageModule.migration1To2, StorageModule.migration2To3, StorageModule.migration3To4, StorageModule.migration4To5, StorageModule.migration5To6, StorageModule.migration6To7, StorageModule.migration7To8).build()
         try {
         kotlinx.coroutines.runBlocking { val p=room.documents().pages("doc").single(); assertNull(p.pageName); assertEquals("Original",p.pageSize); assertEquals("Fit",p.pageFit) }
         with(room.openHelper.writableDatabase) {

@@ -44,7 +44,7 @@ internal suspend fun reconcileDriveDeletion(dao: DocumentDao, receipt: BackupRec
         .forEach { candidates.put(it.id,it.hash) }
     scan { file,manifest,hash ->
         if(if(pageOnly) manifest.pages.none(::targeted) else manifest.documents.none { it.id==documentId }) return@scan
-        val removed=manifest.pages.filter(::targeted).flatMap { listOf(it.original,it.processed) }.toSet()
+        val removed=manifest.pages.filter(::targeted).flatMap { listOf(it.original,it.processed) }.toSet()+manifest.documents.filter { it.id==documentId }.map { it.pdfHash }.filter { it.isNotEmpty() }
         manifest.assets.filter { it.hash in removed }.forEach { candidates.put(it.remoteId,it.hash) }
         checkpoint() // Persist before patching: a crash must not lose now-unreferenced asset IDs.
         remote.replaceManifest(file.id,receipt.remoteId,hash,if(pageOnly) manifest.withoutPages(setOf(receipt.hash)) else manifest.withoutDocuments(setOf(documentId)))

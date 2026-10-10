@@ -35,6 +35,7 @@ class DocumentRepository @Inject constructor(
     val folders = dao.observeFolders()
     // ponytail: one mutation lock; split by document only if measured throughput needs it.
     private val mutation = Mutex()
+    private val activePdfImports=java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     suspend fun snapshotOcr(id:String,target:File):Page=withContext(Dispatchers.IO) {
         val (page,input)=mutation.withLock {
             val p=requireNotNull(dao.page(id)); require(p.trashedAt==null); activeDocument(p.documentId)
@@ -82,7 +83,21 @@ class DocumentRepository @Inject constructor(
                 try { page.copy(originalImageUri=pin(inputs.first,"original"),processedImageUri=pin(inputs.second,"processed"),thumbnailUri="") }
                 finally { inputs.first.close(); inputs.second.close() }
             }
-            snapshot to snapshot.copy(pages=pinned)
+            snapshot.documents.filter { it.pdfHash.isNotEmpty() && it.pdfRevision>0 }.forEach { doc ->
+                val source=mutation.withLock {
+                    require(dao.document(doc.id)?.pdfHash==doc.pdfHash) { "PDF changed while preparing backup. Retry." }
+                    File(directory(doc.id),"pdf/${doc.pdfHash}.pdf").inputStream()
+                }
+                source.use { input -> File(target,doc.pdfHash).outputStream().use { out ->
+                    val buffer=ByteArray(65536); var total=0L
+                    while(true) { kotlinx.coroutines.currentCoroutineContext().ensureActive(); val n=input.read(buffer); if(n<0) break
+                        total+=n; stagedBytes+=n
+                        require(total<=dev.folio.scanner.backup.BackupManifest.MAX_ASSET_BYTES && stagedBytes<=10L*1024*1024*1024) { "PDF data exceeds the backup size limit." }
+                        out.write(buffer,0,n)
+                    }
+                } }
+            }
+            snapshot to snapshot.copy(pages=pinned,documents=snapshot.documents.map { if(it.pdfRevision==0L) it.copy(pdfHash="") else it })
     }
     /** All assets and thumbnails must be validated before this bounded, atomic publication. */
     suspend fun mergeBackup(manifest: dev.folio.scanner.backup.BackupManifest, stage: File, operation: String): Int = mutation.withLock {
@@ -147,6 +162,103 @@ class DocumentRepository @Inject constructor(
         require(UUID.fromString(id).toString() == id) { "Invalid document identifier." }
         return File(context.filesDir, "documents/$id")
     }
+    /** Prepare immutable PDF and derived pages before publishing anything into the library. */
+    suspend fun importPdf(source: File, title: String, engine: dev.folio.scanner.pdf.PdfEngine,
+                          overwrite: String? = null, expectedHash: String? = null, expectedModifiedAt:Long?=null, newDocumentId:String?=null,
+                          progress: (Int,Int)->Unit = { _,_ -> }): String = withContext(Dispatchers.IO) {
+        val id=overwrite ?: newDocumentId ?: UUID.randomUUID().toString()
+        require(UUID.fromString(id).toString()==id)
+        val operation=UUID.randomUUID().toString()
+        activePdfImports.add(operation)
+        val stage=File(context.filesDir,"pdf-import/$operation").apply { mkdirs() }
+        try {
+            require(source.length() in 1..dev.folio.scanner.backup.BackupManifest.MAX_ASSET_BYTES) { "Managed PDFs must be smaller than 100 MB." }
+            val hash=dev.folio.scanner.backup.hashFile(source)
+            val count=engine.count(source)
+            val native=File(stage,"pdf/$hash.pdf").apply { parentFile!!.mkdirs() }
+            source.inputStream().use { input -> native.outputStream().use { input.copyTo(it,65536) } }
+            check(dev.folio.scanner.backup.hashFile(native)==hash)
+            val pages=(1..count).map { number ->
+                kotlinx.coroutines.currentCoroutineContext().ensureActive(); progress(number-1,count)
+                val pageId=UUID.randomUUID().toString()
+                val bitmap=engine.render(native,number,stage,edge=3000)
+                try {
+                    val image=File(stage,"originals/$pageId.png").apply { parentFile!!.mkdirs() }
+                    image.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG,100,it)) }
+                    val thumb=File(stage,"thumbnails/$pageId.jpg").apply { parentFile!!.mkdirs() }
+                    writeThumbnail(bitmap,thumb)
+                    engine.read(native).use { pdf ->
+                        val size=pdf.getPage(number).pageSizeWithRotation
+                        Page(pageId,id,number-1,image.path,image.path,thumb.path,bitmap.width,bitmap.height,
+                            crop=encodeCorners(Geometry.full),pageSize="Custom",pageWidthMm=size.width*25.4/72,pageHeightMm=size.height*25.4/72)
+                    }
+                } finally { bitmap.recycle() }
+            }
+            mutation.withLock {
+                if(newDocumentId!=null && dao.document(id)!=null) return@withLock
+                val previous=overwrite?.let { activeDocument(it) }
+                require(previous==null || previous.importedPdf && previous.pdfHash==expectedHash && (expectedModifiedAt==null || previous.modifiedAt==expectedModifiedAt)) { "The stored PDF changed. Reopen it before overwriting." }
+                val name=uniqueTitle(title,overwrite)
+                val destination=directory(id).apply { mkdirs() }
+                val published=mutableListOf<File>()
+                try {
+                    val moves=stage.walkTopDown().filter {it.isFile}.map {file ->File(destination,file.relativeTo(stage).path)}.filter {!it.exists()}.toList()
+                    dev.folio.scanner.backup.FolioBackupRepository.atomicWrite(File(stage,"publication.json"),org.json.JSONObject().put("document",id).put("files",org.json.JSONArray(moves.map {it.path})).toString().toByteArray())
+                    stage.walkTopDown().filter { it.isFile }.forEach { file ->
+                        if(file.name=="publication.json") return@forEach
+                        val target=File(destination,file.relativeTo(stage).path).apply { parentFile!!.mkdirs() }
+                        if(!target.exists()) { check(file.renameTo(target)); published+=target }
+                    }
+                    val now=System.currentTimeMillis()
+                    val document=previous?.copy(title=name,pageCount=count,modifiedAt=now,pdfHash=hash,pdfRevision=now,importedPdf=true)
+                        ?: Document(id,name,now,now,pageCount=count,pdfHash=hash,pdfRevision=now,importedPdf=true)
+                    database.withTransaction {
+                        if(previous!=null) {
+                            dao.storedPages(id).forEach {page ->
+                                val paths=org.json.JSONArray(listOf(page.originalImageUri,page.processedImageUri,page.thumbnailUri).distinct())
+                                dao.save(BackupRecord("local:delete:page:${page.id}:$id","",page.id,0,now,"local-page-cleanup",paths.toString()))
+                                dao.deletePage(page.id)
+                            }
+                            dao.pdfs(id).forEach { dao.deletePdf(it.id) }
+                        }
+                        dao.save(document)
+                        pages.forEach { p ->
+                            fun path(value:String)=File(destination,File(value).relativeTo(stage).path).path
+                            dao.save(p.copy(originalImageUri=path(p.originalImageUri),processedImageUri=path(p.processedImageUri),thumbnailUri=path(p.thumbnailUri)))
+                        }
+                    }
+                    withContext(kotlinx.coroutines.NonCancellable) {cleanDeletedPages()}
+                } catch(t:Throwable) {
+                    withContext(kotlinx.coroutines.NonCancellable) {
+                        val committed=dao.document(id)
+                        val referenced=dao.storedPages(id).flatMap { listOf(it.originalImageUri,it.processedImageUri,it.thumbnailUri) }.toSet()
+                        published.filter { it.path !in referenced && it.name!="${committed?.pdfHash}.pdf" }.forEach { it.delete() }
+                    }
+                    throw t
+                }
+            }
+            progress(count,count); id
+        } finally { stage.deleteRecursively();activePdfImports.remove(operation) }
+    }
+
+    suspend fun snapshotPdf(id:String,target:File,engine:dev.folio.scanner.pdf.PdfEngine): Document = withContext(Dispatchers.IO) {
+        val doc=mutation.withLock { activeDocument(id).also { require(it.importedPdf) { "Choose an imported PDF." } } }
+        if(doc.pdfRevision>0) {
+            val input=mutation.withLock {
+                require(dao.document(id)==doc) { "Document changed. Retry." }
+                File(directory(id),"pdf/${doc.pdfHash}.pdf").inputStream()
+            }
+            input.use { source -> target.outputStream().use { source.copyTo(it,65536) } }
+            check(dev.folio.scanner.backup.hashFile(target)==doc.pdfHash)
+        } else {
+            val images=File(target.parentFile,"pdf-pages-${UUID.randomUUID()}")
+            try {
+                val layouts=mutableListOf<PageLayout>()
+                engine.generate(snapshotImages(id,images,layouts=layouts),target,doc.title,layouts=layouts)
+            } finally { images.deleteRecursively() }
+        }
+        doc
+    }
     suspend fun create(title: String, folderId: String? = null): String = mutation.withLock {
         val id = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
@@ -167,7 +279,7 @@ class DocumentRepository @Inject constructor(
         val page = requireNotNull(dao.page(id)); require(page.trashedAt==null); val doc = activeDocument(page.documentId)
         database.withTransaction {
             dao.save(page.copy(pageName = pageName(name)))
-            dao.save(doc.copy(modifiedAt = System.currentTimeMillis()))
+            dao.save(doc.copy(pdfRevision=0, modifiedAt = System.currentTimeMillis()))
         }
     }
     suspend fun favorite(id: String) = update(id) { it.copy(favorite = !it.favorite) }
@@ -253,6 +365,22 @@ class DocumentRepository @Inject constructor(
         }
     }
     suspend fun recoverCaptures() = withContext(Dispatchers.IO) {
+        mutation.withLock {
+            File(context.filesDir,"pdf-import").listFiles().orEmpty().filter {it.name !in activePdfImports}.forEach {stage ->
+                val journal=File(stage,"publication.json")
+                if(journal.isFile) {
+                    val j=org.json.JSONObject(journal.readText());val id=j.getString("document");val root=directory(id).canonicalFile
+                    val referenced=dao.storedPages(id).flatMap {listOf(it.originalImageUri,it.processedImageUri,it.thumbnailUri)}.map {File(it).canonicalPath}.toSet()
+                    val native=dao.document(id)?.pdfHash?.takeIf {it.isNotBlank()}?.let {File(root,"pdf/$it.pdf").canonicalPath}
+                    val files=j.getJSONArray("files")
+                    repeat(files.length()) {i ->val file=File(files.getString(i)).canonicalFile
+                        require(file.toPath().startsWith(root.toPath())) {"Invalid interrupted PDF import."}
+                        if(file.path !in referenced && file.path!=native) check(!file.exists() || file.delete()) {"Could not recover interrupted PDF import."}
+                    }
+                }
+                stage.deleteRecursively()
+            }
+        }
         val pending = File(context.filesDir, "pending-captures")
         pending.listFiles()?.filter { it.extension == "jpg" }?.forEach { file ->
             val id = file.name.substringBefore('_')
@@ -388,7 +516,7 @@ class DocumentRepository @Inject constructor(
             ids.forEachIndexed { index, id -> dao.position(id, -index - 1) }
             ids.forEachIndexed { index, id -> dao.position(id, index) }
             val doc = requireNotNull(dao.document(documentId))
-            dao.save(doc.copy(pageCount = ids.size, modifiedAt = System.currentTimeMillis()))
+            dao.save(doc.copy(pdfRevision=0, pageCount = ids.size, modifiedAt = System.currentTimeMillis()))
         }
     }
     suspend fun importImage(documentId: String, input: InputStream, captureId: String? = null, detectDocument: Boolean = true): String = mutation.withLock {
@@ -417,7 +545,7 @@ class DocumentRepository @Inject constructor(
                 database.withTransaction {
                     val pages = dao.pages(documentId)
                     dao.save(Page(pageId, documentId, pages.size, original.path, original.path, fallbackThumbnail.path, originalWidth, originalHeight, crop = encodeCorners(Geometry.full)))
-                    dao.save(doc.copy(pageCount = pages.size + 1, modifiedAt = System.currentTimeMillis()))
+                    dao.save(doc.copy(pdfRevision=0, pageCount = pages.size + 1, modifiedAt = System.currentTimeMillis()))
                 }
                 val corners = if (detectDocument) pipeline.detect(bitmap) ?: Geometry.full else Geometry.full
                 bitmap.recycle(); bitmap = null
@@ -458,7 +586,7 @@ class DocumentRepository @Inject constructor(
                     dao.save(page.copy(processedImageUri = file.path, thumbnailUri = thumb.path, crop = encodeCorners(crop), width = result.width, height = result.height, rotation = angle, enhancement = config.encode(), pageSize = paper.size, pageFit = paper.fit, pageWidthMm = paper.widthMm, pageHeightMm = paper.heightMm))
                     dao.clearOcr(pageId)
                     val doc = requireNotNull(dao.document(page.documentId))
-                    dao.save(doc.copy(modifiedAt = System.currentTimeMillis()))
+                    dao.save(doc.copy(pdfRevision=0, modifiedAt = System.currentTimeMillis()))
                 }
                 discardUnreferenced(page.documentId, listOf(File(page.processedImageUri), File(page.thumbnailUri)))
                 if(enqueueOcr) queueOcr(pageId)
@@ -482,7 +610,7 @@ class DocumentRepository @Inject constructor(
     private suspend fun orderPages(document:String,pages:List<Page>) {
         pages.forEachIndexed { i,p -> dao.position(p.id,-i-1) }
         pages.forEachIndexed { i,p -> dao.position(p.id,i) }
-        dao.document(document)?.let { dao.save(it.copy(pageCount=pages.size,modifiedAt=System.currentTimeMillis())) }
+        dao.document(document)?.let { dao.save(it.copy(pdfRevision=0,pageCount=pages.size,modifiedAt=System.currentTimeMillis())) }
     }
     suspend fun restorePages(ids:Set<String>) = mutation.withLock {
         database.withTransaction {
@@ -518,7 +646,7 @@ class DocumentRepository @Inject constructor(
                 remaining.forEachIndexed { i, p -> dao.position(p.id, -i - 1) }
                 remaining.forEachIndexed { i, p -> dao.position(p.id, i) }
                 val doc = requireNotNull(dao.document(documentId))
-                dao.save(doc.copy(pageCount = remaining.size, modifiedAt = System.currentTimeMillis()))
+                dao.save(doc.copy(pdfHash="",pdfRevision=0, pageCount = remaining.size, modifiedAt = System.currentTimeMillis()))
             }
             }
             withContext(NonCancellable) { cleanDeletedPages() }
@@ -532,6 +660,8 @@ class DocumentRepository @Inject constructor(
             check(!ocrInput.exists() || ocrInput.delete()) { "Page removed; OCR input cleanup will retry on restart." }
             val paths=org.json.JSONArray(receipt.session)
             val referenced=dao.storedPages(document).flatMap { listOf(it.originalImageUri,it.processedImageUri,it.thumbnailUri) }.map { File(it).canonicalFile }.toSet()
+            val currentHash=dao.document(document)?.pdfHash.orEmpty()
+            File(directory(document),"pdf").listFiles().orEmpty().filter { it.name!="$currentHash.pdf" }.forEach { check(it.delete()) { "Removed page's native PDF cleanup will retry." } }
             repeat(paths.length()) { index ->
                 val file=File(paths.getString(index)).canonicalFile
                 require(file.toPath().startsWith(directory(document).canonicalFile.toPath()))
@@ -557,7 +687,7 @@ class DocumentRepository @Inject constructor(
                     dao.ocr(pageId)?.let { dao.save(it.copy(pageId = newId)) }
                     dao.annotations(pageId).forEach { dao.save(it.copy(id = UUID.randomUUID().toString(), pageId = newId)) }
                     val doc = requireNotNull(dao.document(page.documentId))
-                    dao.save(doc.copy(pageCount = pages.size + 1, modifiedAt = System.currentTimeMillis()))
+                    dao.save(doc.copy(pdfRevision=0, pageCount = pages.size + 1, modifiedAt = System.currentTimeMillis()))
                 }
                 newId
             } catch (failure: Exception) { discardUnreferenced(page.documentId, listOf(originals, processed, thumbnail)); throw failure }
@@ -579,7 +709,7 @@ class DocumentRepository @Inject constructor(
             pages.forEachIndexed { i, p -> dao.position(p.id, -i - 1) }
             pages.forEachIndexed { i, p -> dao.position(p.id, i) }
             val doc = requireNotNull(dao.document(old.documentId))
-            dao.save(doc.copy(pageCount = pages.size, modifiedAt = System.currentTimeMillis()))
+            dao.save(doc.copy(pdfRevision=0, pageCount = pages.size, modifiedAt = System.currentTimeMillis()))
         }
         // Retain superseded originals until document deletion; replacement never destroys source captures.
         }

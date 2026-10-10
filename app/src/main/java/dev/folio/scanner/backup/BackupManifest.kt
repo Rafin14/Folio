@@ -15,7 +15,7 @@ data class BackupManifest(val id: String, val createdAt: Long, val folders: List
     fun withoutDocuments(ids: Set<String>): BackupManifest {
         val keptPages=pages.filter { it.page.documentId !in ids }
         val pageIds=keptPages.map { it.page.id }.toSet()
-        val hashes=keptPages.flatMap { listOf(it.original,it.processed) }.toSet()
+        val hashes=keptPages.flatMap { listOf(it.original,it.processed) }.toSet()+documents.filter { it.id !in ids }.map { it.pdfHash }.filter { it.isNotEmpty() }
         return copy(documents=documents.filter { it.id !in ids },pages=keptPages,
             assets=assets.filter { it.hash in hashes },ocr=ocr.filter { it.pageId in pageIds })
     }
@@ -23,8 +23,10 @@ data class BackupManifest(val id: String, val createdAt: Long, val folders: List
         val kept=pages.filter { it.page.id !in ids }.groupBy { it.page.documentId }
         val ordered=documents.flatMap { doc -> val rows=kept[doc.id].orEmpty(); rows.filter { it.page.trashedAt==null }.sortedBy { it.page.position }.mapIndexed { index,p -> p.copy(page=p.page.copy(position=index)) }+rows.filter { it.page.trashedAt!=null } }
         val pageIds=ordered.map { it.page.id }.toSet()
-        val hashes=ordered.flatMap { listOf(it.original,it.processed) }.toSet()
-        return copy(documents=documents.map { it.copy(pageCount=kept[it.id].orEmpty().count { p -> p.page.trashedAt==null }) },pages=ordered,assets=assets.filter { it.hash in hashes },ocr=ocr.filter { it.pageId in pageIds })
+        val changedDocuments=pages.filter { it.page.id in ids }.map { it.page.documentId }.toSet()
+        val keptDocuments=documents.map { if(it.id in changedDocuments) it.copy(pdfHash="",pdfRevision=0) else it }
+        val hashes=ordered.flatMap { listOf(it.original,it.processed) }.toSet()+keptDocuments.map { it.pdfHash }.filter { it.isNotEmpty() }
+        return copy(documents=keptDocuments.map { it.copy(pageCount=kept[it.id].orEmpty().count { p -> p.page.trashedAt==null }) },pages=ordered,assets=assets.filter { it.hash in hashes },ocr=ocr.filter { it.pageId in pageIds })
     }
     fun withoutDeleted(records:List<BackupRecord>) = withoutDocuments(records.filter { !it.pageRemoval }.map { it.hash }.toSet())
         .withoutPages(records.filter { it.pageRemoval }.map { it.hash }.toSet())
@@ -38,7 +40,7 @@ data class BackupManifest(val id: String, val createdAt: Long, val folders: List
         val grouped=pages.groupBy { it.page.documentId }; val assetHashes=assets.map { it.hash }.toSet()
         folders.forEach { uuid(it.id); validatedTitle(it.name) }
         documents.forEach { doc ->
-            uuid(doc.id); validatedTitle(doc.title)
+            uuid(doc.id); validatedTitle(doc.title); require(doc.pdfHash.isEmpty() || doc.pdfHash.matches(Regex("[a-f0-9]{64}")) && doc.pdfHash in assetHashes); require(doc.pdfRevision>=0)
             require(!doc.deleting && doc.createdAt >= 0 && doc.modifiedAt >= 0 && (doc.trashedAt == null || doc.trashedAt >= 0)) { "Invalid document metadata." }
             require(doc.folderId == null || doc.folderId in folderIds) { "Missing folder." }
             require(grouped[doc.id].orEmpty().map { it.page.position }.distinct().size==grouped[doc.id].orEmpty().size) { "Duplicate stored page position." }
@@ -66,7 +68,7 @@ data class BackupManifest(val id: String, val createdAt: Long, val folders: List
             if(e.size == 1) Enhancement(e[0]) else Enhancement(e[0],e[1].toDouble(),e[2].toDouble(),e[3].toDouble(),e[4].toDouble(),e[5].toDouble(),e.getOrNull(6)?.toDouble() ?: 0.0)
             require(entry.original in assetHashes && entry.processed in assetHashes) { "Missing page asset." }
         }
-        require(assets.map { it.hash }.toSet() == pages.flatMap { listOf(it.original,it.processed) }.toSet()) { "Unrelated backup assets." }
+        require(assets.map { it.hash }.toSet() == pages.flatMap { listOf(it.original,it.processed) }.toSet()+documents.map { it.pdfHash }.filter { it.isNotEmpty() }) { "Unrelated backup assets." }
         require(ocr.map { it.pageId }.distinct().size==ocr.size)
         ocr.forEach { r ->
             val p=pages.firstOrNull { it.page.id==r.pageId } ?: error("OCR has no page.")
@@ -85,12 +87,12 @@ data class BackupManifest(val id: String, val createdAt: Long, val folders: List
             require(it.size <= MAX_MANIFEST_BYTES) { "Backup manifest exceeds 8 MB." }
         }
     }
-    fun body(): JSONObject = JSONObject().put("schema",4).put("id",id).put("createdAt",createdAt)
+    fun body(): JSONObject = JSONObject().put("schema",5).put("id",id).put("createdAt",createdAt)
         .put("ocr",JSONArray(ocr.sortedBy { it.pageId }.map { dev.folio.scanner.ocr.ocrJson(it) }))
         .put("folders",JSONArray(folders.sortedBy { it.id }.map { JSONObject().put("id",it.id).put("name",it.name) }))
         .put("documents",JSONArray(documents.sortedBy { it.id }.map { d -> JSONObject().put("id",d.id).put("title",d.title)
             .put("createdAt",d.createdAt).put("modifiedAt",d.modifiedAt).put("folderId",d.folderId ?: JSONObject.NULL)
-            .put("favorite",d.favorite).put("pageCount",d.pageCount).put("trashedAt",d.trashedAt ?: JSONObject.NULL) }))
+            .put("importedPdf",d.importedPdf).put("pdfHash",d.pdfHash).put("pdfRevision",d.pdfRevision).put("favorite",d.favorite).put("pageCount",d.pageCount).put("trashedAt",d.trashedAt ?: JSONObject.NULL) }))
         .put("pages",JSONArray(pages.sortedWith(compareBy({it.page.documentId},{it.page.position})).map { entry -> val p=entry.page
             JSONObject().put("id",p.id).put("documentId",p.documentId).put("position",p.position).put("width",p.width).put("height",p.height)
                 .put("pageName",p.pageName ?: JSONObject.NULL).put("pageSize",p.pageSize).put("pageFit",p.pageFit).put("pageWidthMm",p.pageWidthMm).put("pageHeightMm",p.pageHeightMm)
@@ -104,16 +106,16 @@ data class BackupManifest(val id: String, val createdAt: Long, val folders: List
             require(bytes.size <= MAX_MANIFEST_BYTES) { "Backup manifest exceeds 8 MB." }
             val envelope=JSONObject(bytes.toString(Charsets.UTF_8)); val b=envelope.getJSONObject("backup")
             require(envelope.getString("sha256") == sha256(canonical(b).toByteArray())) { "Backup manifest checksum failed." }
-            require(b.get("schema").toString() in listOf("1","2","3","4")) { "Unsupported backup schema. Update Folio before restoring." }
+            require(b.get("schema").toString() in listOf("1","2","3","4","5")) { "Unsupported backup schema. Update Folio before restoring." }
             fun array(name:String)=b.getJSONArray(name).let { a -> List(a.length()) { a.getJSONObject(it) } }
             val folders=array("folders").map { Folder(it.getString("id"),it.getString("name")) }
             val docs=array("documents").map { Document(it.getString("id"),it.getString("title"),it.getLong("createdAt"),it.getLong("modifiedAt"),
                 if(it.isNull("folderId")) null else it.getString("folderId"),it.getBoolean("favorite"),it.getInt("pageCount"),false,
-                if(it.isNull("trashedAt")) null else it.getLong("trashedAt")) }
+                if(it.isNull("trashedAt")) null else it.getLong("trashedAt"),it.optString("pdfHash"),it.optLong("pdfRevision"),it.optBoolean("importedPdf")) }
             val pages=array("pages").map { BackupPage(Page(it.getString("id"),it.getString("documentId"),it.getInt("position"),"","","",
                 it.getInt("width"),it.getInt("height"),it.getInt("rotation"),it.getString("crop"),it.getString("enhancement"),if(it.isNull("pageName")) null else it.getString("pageName"),it.optString("pageSize","Original"),it.optString("pageFit","Fit"),it.optDouble("pageWidthMm",0.0),it.optDouble("pageHeightMm",0.0),if(it.isNull("trashedAt")) null else it.getLong("trashedAt"),if(it.isNull("trashPosition")) null else it.getInt("trashPosition"),if(it.isNull("trashDocumentTitle")) null else it.getString("trashDocumentTitle")),it.getString("original"),it.getString("processed")) }
             val assets=array("assets").map { BackupAsset(it.getString("hash"),it.getLong("bytes"),it.getString("remoteId")) }
-            val ocr=if(b.get("schema").toString() in listOf("2","3","4")) array("ocr").map { dev.folio.scanner.ocr.readOcr(it) } else emptyList()
+            val ocr=if(b.get("schema").toString() in listOf("2","3","4","5")) array("ocr").map { dev.folio.scanner.ocr.readOcr(it) } else emptyList()
             return BackupManifest(b.getString("id"),b.getLong("createdAt"),folders,docs,pages,assets,ocr).also { it.validate(remote) }
         }
         fun uuid(value:String) { require(UUID.fromString(value).toString() == value) { "Invalid backup identifier." } }

@@ -9,6 +9,10 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.*
 import androidx.compose.material.icons.Icons
@@ -25,9 +29,13 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.unit.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.folio.scanner.pdf.*
@@ -39,10 +47,11 @@ import java.io.File
 import java.util.UUID
 
 @Composable
-internal fun PdfUtilityEditor(id:String,initialPages:List<UtilityPage>,model:LibraryViewModel,back:()->Unit,export:()->Unit,changed:()->Unit) {
+internal fun PdfUtilityEditor(id:String,initialPages:List<UtilityPage>,model:LibraryViewModel,back:()->Unit,export:()->Unit,changed:()->Unit,initialPage:Int=0,showGallery:(()->Unit)?=null,pageSelected:((Int)->Unit)?=null) {
     val utility=model.utility
     var pages by remember(id) { mutableStateOf(initialPages) }
-    val pager=rememberPagerState(pageCount={ pages.size })
+    val pager=rememberPagerState(initialPage=initialPage.coerceIn(0,pages.lastIndex),pageCount={ pages.size })
+    LaunchedEffect(pager.currentPage) {pageSelected?.invoke(pager.currentPage)}
     val scope=rememberCoroutineScope()
     val busy by model.busy.collectAsStateWithLifecycle()
     val colors=MaterialTheme.colorScheme
@@ -50,6 +59,8 @@ internal fun PdfUtilityEditor(id:String,initialPages:List<UtilityPage>,model:Lib
     var inkColor by remember { mutableStateOf(palette[1].toArgb()) }
     var pen by rememberSaveable { mutableFloatStateOf(.004f) }
     var drawing by rememberSaveable { mutableStateOf(false) }
+    var zoomedPage by remember {mutableStateOf<String?>(null)}
+    var operationMenu by remember {mutableStateOf(false)}
     var organize by rememberSaveable { mutableStateOf(false) }
     var replace by rememberSaveable { mutableStateOf(false) }
     var choosePage by rememberSaveable { mutableStateOf(false) }
@@ -76,17 +87,31 @@ internal fun PdfUtilityEditor(id:String,initialPages:List<UtilityPage>,model:Lib
     if(replacementPdf.isNotEmpty()) { PdfReplacementPagePicker(File(replacementPdf),model,{ replacementPdf="" }) { image,layout -> stage(image,layout) }; return }
     if(scan) { ScannerScreen(id,model,{ scan=false },{},utilityCapture={ copyReplacement(it) }); return }
     if(replacementFile.isNotEmpty()) { PdfReplacementEditor(File(replacementFile),model,{ replacementFile="" },PageLayout("Custom","Fit",targetWidth,targetHeight),if(naturalWidth>0) PageLayout("Custom","Fit",naturalWidth,naturalHeight) else null) { result,layout ->
-        model.run { val pdf=File(utility.folder(id),"replacement-${UUID.randomUUID()}.pdf"); withContext(Dispatchers.IO) { utility.engine.generate(listOf(result),pdf,"Replacement page",layouts=listOf(layout)) }; val page=pages.firstOrNull { it.id==replacementTarget }; if(page!=null) update(page.copy(replacement=pdf.path,rotation=0,ink=emptyList(),notes=emptyList())); replacementFile="" }
+        model.run {
+            val page=requireNotNull(pages.firstOrNull { it.id==replacementTarget }) { "The replacement target is no longer available. Cancel and choose the page again." }
+            val pdf=File(utility.folder(id),"replacement-${UUID.randomUUID()}.pdf")
+            withContext(Dispatchers.IO) { utility.engine.generate(listOf(result),pdf,"Replacement page",layouts=listOf(layout)) }
+            update(page.copy(replacement=pdf.path,rotation=0,ink=emptyList(),notes=emptyList()))
+            replacementFile=""
+        }
     }; return }
     fun leave() { if(drawing) drawing=false else back() }
     BackHandler { leave() }
-    Scaffold(topBar={ TopAppBar(title={ Text("${pager.currentPage+1} of ${pages.size}",maxLines=1) },navigationIcon={ FilledTonalButton(onClick=export,enabled=!busy,modifier=Modifier.padding(start=8.dp)) { Text("Export") } },actions={ IconButton(onClick={ organize=true }) { Icon(Icons.Outlined.ViewList,"Arrange PDF pages") }; IconButton(onClick=::leave,enabled=!busy) { Icon(Icons.Outlined.Close,"Close PDF editor") } }) },bottomBar={
+    Scaffold(topBar={ TopAppBar(title={ Text("${pager.currentPage+1} of ${pages.size}",maxLines=1) },navigationIcon={ FilledTonalButton(onClick=export,enabled=!busy,modifier=Modifier.padding(start=8.dp)) { Text("Export") } },actions={ Box {
+        IconButton(onClick={operationMenu=true}) {Icon(Icons.Outlined.MoreVert,"PDF editor menu")}
+        FolioOverflowMenu(operationMenu,{operationMenu=false},"Edit PDF") {
+            if(showGallery!=null) FolioMenuItem(label="Page gallery",onClick={operationMenu=false;showGallery()})
+            FolioMenuItem(label="Save and Export",enabled=!busy,onClick={operationMenu=false;export()})
+            MenuSeparator()
+            FolioMenuItem(label="Arrange PDF pages",onClick={operationMenu=false;organize=true})
+        }
+    }; IconButton(onClick={ organize=true }) { Icon(Icons.Outlined.ViewList,"Arrange PDF pages") }; IconButton(onClick=::leave,enabled=!busy) { Icon(Icons.Outlined.Close,"Close PDF editor") } }) },bottomBar={
         Column(Modifier.navigationBarsPadding().padding(horizontal=12.dp,vertical=8.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 FilterChip(drawing,{ drawing=!drawing },label={ Text(if(drawing) "Drawing" else "Draw") })
                 OutlinedButton(onClick={ update(current.rotated()) }) { Icon(Icons.Outlined.Rotate90DegreesCw,null); Text("Rotate") }
                 OutlinedButton(onClick={ model.run { val layout=utility.replacementTargetLayout(id,current); targetWidth=layout.widthMm; targetHeight=layout.heightMm; replacementTarget=current.id; replace=true } },enabled=!busy) { Text("Replace") }
-                OutlinedButton(onClick={ remove=true },enabled=pages.size>1) { Text("Delete") }
+                OutlinedButton(colors=ButtonDefaults.outlinedButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick={ remove=true },enabled=pages.size>1) { Text("Delete") }
                 OutlinedButton(onClick={ update(current.copy(ink=current.ink.dropLast(1))) },enabled=current.ink.isNotEmpty()) { Text("Undo drawing") }
             }
             if(drawing) Row(Modifier.horizontalScroll(rememberScrollState()),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
@@ -95,7 +120,7 @@ internal fun PdfUtilityEditor(id:String,initialPages:List<UtilityPage>,model:Lib
             }
             Text(if(drawing) "Draw on the page. Turn Draw off to swipe." else "Swipe between pages. Export saves a new file.",style=MaterialTheme.typography.labelSmall,color=colors.onSurfaceVariant)
         }
-    }) { padding -> HorizontalPager(pager,Modifier.fillMaxSize().padding(padding),userScrollEnabled=!drawing && !busy,key={ pages[it].id }) { index ->
+    }) { padding -> HorizontalPager(pager,Modifier.fillMaxSize().padding(padding),userScrollEnabled=!drawing && !busy && zoomedPage!=current.id,key={ pages[it].id }) { index ->
         val page=pages[index]
         var image by remember(page.id,page.replacement) { mutableStateOf<Bitmap?>(null) }
         var error by remember { mutableStateOf("") }
@@ -113,8 +138,37 @@ internal fun PdfUtilityEditor(id:String,initialPages:List<UtilityPage>,model:Lib
         if(bitmap==null) Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) { if(error.isBlank()) CircularProgressIndicator() else Text(error) }
         else {
             val aspect=bitmap.width.toFloat()/bitmap.height
-            Canvas(Modifier.fillMaxSize().clipToBounds().semantics { contentDescription="PDF page ${index+1} canvas" }.pointerInput(page.id,drawing,bitmap) {
-                if(drawing) detectDragGestures(onDragStart={ p -> val r=fit(size.width.toFloat(),size.height.toFloat(),aspect,12.dp.toPx()); stroke=if(p.x in r[0]..r[0]+r[2] && p.y in r[1]..r[1]+r[3]) listOf(InkPoint((p.x-r[0])/r[2],(p.y-r[1])/r[3])) else emptyList() },onDragCancel={ stroke=emptyList() },onDragEnd={ if(stroke.isNotEmpty()) update(latestPage.copy(ink=latestPage.ink+PdfInk(inkColor,pen,stroke))); stroke=emptyList() }) { change,_ -> change.consume(); if(stroke.isNotEmpty()) { val r=fit(size.width.toFloat(),size.height.toFloat(),aspect,12.dp.toPx()); stroke=stroke+InkPoint(((change.position.x-r[0])/r[2]).coerceIn(0f,1f),((change.position.y-r[1])/r[3]).coerceIn(0f,1f)) } }
+            var zoom by rememberSaveable(page.id) {mutableFloatStateOf(1f)}
+            var pan by remember(page.id) {mutableStateOf(Offset.Zero)}
+            var canvasSize by remember {mutableStateOf(IntSize.Zero)}
+            fun transform(scale:Float,delta:Offset=Offset.Zero) {
+                zoom=(zoom*scale).coerceIn(1f,6f)
+                val r=fit(canvasSize.width.toFloat(),canvasSize.height.toFloat(),aspect,0f)
+                val maxX=(r[2]*zoom-canvasSize.width).coerceAtLeast(0f)/2
+                val maxY=(r[3]*zoom-canvasSize.height).coerceAtLeast(0f)/2
+                pan=Offset((pan.x+delta.x).coerceIn(-maxX,maxX),(pan.y+delta.y).coerceIn(-maxY,maxY))
+                zoomedPage=if(zoom>1f) page.id else null
+            }
+            val gestures=rememberTransformableState {scale,delta,_ ->transform(scale,delta)}
+            Box(Modifier.fillMaxSize().clipToBounds().onSizeChanged {canvasSize=it}.transformable(gestures,canPan={zoom>1f && !drawing})) {
+            Canvas(Modifier.fillMaxSize().graphicsLayer {scaleX=zoom;scaleY=zoom;translationX=pan.x;translationY=pan.y}.semantics {
+                contentDescription="PDF page ${index+1} canvas";stateDescription="Zoom ${"%.1f".format(java.util.Locale.US,zoom)} times"
+                customActions=listOf(CustomAccessibilityAction("Zoom in") {transform(1.5f);true},CustomAccessibilityAction("Zoom out") {transform(1f/1.5f);true},CustomAccessibilityAction("Reset zoom") {transform(1f/zoom);pan=Offset.Zero;true})
+            }.pointerInput(page.id,drawing,bitmap) {
+                if(drawing) awaitEachGesture {
+                    val down=awaitFirstDown(requireUnconsumed=false)
+                    val r=fit(size.width.toFloat(),size.height.toFloat(),aspect,12.dp.toPx())
+                    fun point(p:Offset)=InkPoint(((p.x-r[0])/r[2]).coerceIn(0f,1f),((p.y-r[1])/r[3]).coerceIn(0f,1f))
+                    stroke=if(down.position.x in r[0]..r[0]+r[2] && down.position.y in r[1]..r[1]+r[3]) listOf(point(down.position)) else emptyList()
+                    while(true) {
+                        val event=awaitPointerEvent()
+                        if(event.changes.count {it.pressed}>1) {stroke=emptyList();break}
+                        val change=event.changes.firstOrNull {it.id==down.id} ?: break
+                        if(change.isConsumed) {stroke=emptyList();break}
+                        if(stroke.isNotEmpty()) {stroke=stroke+point(change.position);change.consume()}
+                        if(!change.pressed) {if(stroke.isNotEmpty()) update(latestPage.copy(ink=latestPage.ink+PdfInk(inkColor,pen,stroke)));stroke=emptyList();break}
+                    }
+                }
             }) {
                 val r=fit(size.width,size.height,aspect,12.dp.toPx())
                 // Rendering catches up at animation end; rotation is confined to this page.
@@ -125,9 +179,11 @@ internal fun PdfUtilityEditor(id:String,initialPages:List<UtilityPage>,model:Lib
                 page.notes.forEach { n -> drawIntoCanvas { canvas -> val paint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color=n.color; textSize=n.size*r[2] }; n.text.lines().forEachIndexed { line,text -> canvas.nativeCanvas.drawText(text,r[0]+n.x*r[2],r[1]+n.y*r[3]+line*paint.textSize*1.3f,paint) } } }
                 drawRect(colors.outlineVariant,Offset(r[0],r[1]),androidx.compose.ui.geometry.Size(r[2],r[3]),style=Stroke(1.dp.toPx()))
             }
+            if(zoom>1f) FilledTonalIconButton(onClick={transform(1f/zoom);pan=Offset.Zero},modifier=Modifier.align(Alignment.TopEnd).padding(12.dp)) {Icon(Icons.Outlined.ZoomOutMap,"Fit page")}
+            }
         }
     } }
-    if(remove) AlertDialog(onDismissRequest={ remove=false },title={ Text("Delete this PDF page?") },text={ Text("The page is removed from this edited copy. The source remains unchanged.") },confirmButton={ Button(onClick={ val next=pages-current; pages=next; utility.updatePages(id,next); changed(); remove=false }) { Text("Delete page") } },dismissButton={ OutlinedButton(onClick={ remove=false }) { Text("Cancel") } })
+    if(remove) AlertDialog(onDismissRequest={ remove=false },title={ Text("Delete this PDF page?") },text={ Text("The page is removed from this edited copy. The source remains unchanged.") },confirmButton={ Button(colors=ButtonDefaults.buttonColors(containerColor=MaterialTheme.colorScheme.error,contentColor=MaterialTheme.colorScheme.onError),onClick={ val next=pages-current; pages=next; utility.updatePages(id,next); changed(); remove=false }) { Text("Delete page") } },dismissButton={ OutlinedButton(onClick={ remove=false }) { Text("Cancel") } })
     if(organize) ModalBottomSheet(onDismissRequest={ organize=false }) { Column(Modifier.heightIn(max=600.dp).verticalScroll(rememberScrollState()).padding(16.dp)) { Text("Drag pages to arrange",style=MaterialTheme.typography.titleLarge); ReorderList(pages.map { it.id },{ key -> "Page ${pages.indexOfFirst { it.id==key }+1} · Source ${pages.first { it.id==key }.source}" }) { order -> val activeId=current.id; pages=order.map { key -> pages.first { it.id==key } }; utility.updatePages(id,pages); changed(); scope.launch { pager.scrollToPage(pages.indexOfFirst { it.id==activeId }) } }; Button(onClick={ organize=false },modifier=Modifier.fillMaxWidth()) { Text("Done") } } }
     if(replace) AlertDialog(onDismissRequest={ replace=false },title={ Text("Replace this page") },text={ Column(verticalArrangement=Arrangement.spacedBy(8.dp)) { OutlinedButton(onClick={ replace=false; devicePicker.launch(arrayOf("image/*","application/pdf")) },modifier=Modifier.fillMaxWidth()) { Text("Choose device image or PDF") }; OutlinedButton(onClick={ replace=false; scan=true },modifier=Modifier.fillMaxWidth()) { Text("Use Folio scanner") }; OutlinedButton(onClick={ replace=false; choosePage=true },modifier=Modifier.fillMaxWidth()) { Text("Choose Folio page") } } },confirmButton={ TextButton(onClick={ replace=false }) { Text("Cancel") } })
     if(choosePage) FolioPageChooser(model,true,{ choosePage=false }) { choices -> model.run { val choice=choices.single(); val snapshots=model.repository.snapshotImages(choice.documentId,File(utility.folder(id),"folio-${UUID.randomUUID()}"),setOf(choice.pageId)); copyReplacement(snapshots.single()); choosePage=false } }

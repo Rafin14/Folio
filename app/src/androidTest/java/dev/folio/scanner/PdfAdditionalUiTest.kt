@@ -34,7 +34,9 @@ class PdfAdditionalUiTest {
         try {
             val ids=listOf(page(a,Color.RED),page(a,Color.GREEN),page(a,Color.BLUE)); val bIds=listOf(page(b,Color.YELLOW),page(b,Color.CYAN))
             val before=runBlocking { repo.dao.allDocuments() }; val pending=utility.pending().toSet()
-            compose.onNodeWithText("PDF workspace").performClick(); compose.onNodeWithText("Generate PDF").performClick()
+            compose.onNodeWithText("PDF workspace").performClick()
+            compose.onNode(hasScrollAction()).performScrollToNode(hasText("Generate PDF",substring=false))
+            compose.onNodeWithText("Generate PDF").performClick()
             compose.waitUntil(20000) { compose.onAllNodesWithContentDescription("Open Folio document $titleA").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithContentDescription("Open Folio document $titleA").performScrollTo().performClick()
             compose.onNodeWithContentDescription("Choose Folio Page 3").performScrollTo().performClick()
@@ -75,11 +77,15 @@ class PdfAdditionalUiTest {
         compose.onNodeWithText("PDF workspace").performClick()
         listOf("Split PDF","Merge PDF","PDF to Image","Edit PDF").forEach { tool ->
             compose.onNodeWithText(tool,substring=false).performScrollTo().performClick()
+            if(tool=="Edit PDF") {
+                waitText("Select from Storage")
+                compose.onNodeWithText("Select from Storage").performClick()
+            }
             assertTrue(device.wait(Until.hasObject(By.pkg("com.google.android.documentsui")),15000))
             device.waitForIdle()
             assertTrue("$tool opens Documents on this supported platform",device.wait(Until.hasObject(By.text("Documents")),10000))
             repeat(4) { if(device.hasObject(By.pkg("com.google.android.documentsui"))) { device.pressBack(); device.waitForIdle() } }
-            waitText("Files in. Files out.")
+            waitText("Split PDF")
         }
         assertEquals(before,runBlocking { repo.dao.allDocuments() })
     }

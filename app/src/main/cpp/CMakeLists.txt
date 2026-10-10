@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(folio_pdf LANGUAGES CXX)
+add_library(folio_pdf SHARED PdfiumBridge.cpp)
+target_compile_features(folio_pdf PRIVATE cxx_std_17)
+target_link_libraries(folio_pdf PRIVATE dl)
+target_link_options(folio_pdf PRIVATE "-Wl,-z,max-page-size=16384")

@@ -81,6 +81,17 @@ class FolioBackupRepository @Inject constructor(@ApplicationContext private val 
     val cloudPurges=dao.observeCloudPurges()
     val removalErrors=dao.observeRemovalErrors()
     val removalsRunning=MutableStateFlow(false)
+    val inspectionAuthorized=MutableStateFlow<Boolean?>(null)
+    suspend fun refreshInspectionAuthorization() {
+        val email=state.value.email
+        inspectionAuthorized.value=null
+        if(email.isEmpty()) return
+        val granted=auth.inspectionAuthorized(email)
+        if(state.value.email==email) {
+            check(prefs.edit().putBoolean("inspection:$email",granted).commit())
+            inspectionAuthorized.value=granted
+        }
+    }
     @Volatile private var cloudBarrier=false
     private suspend fun cloudBlocked(email:String=state.value.email):Boolean {
         val blocked=dao.backupRecord(purgeKey(email))?.blocksBackup()==true
@@ -170,6 +181,7 @@ class FolioBackupRepository @Inject constructor(@ApplicationContext private val 
         require(email.contains('@'))
         val old=state.value.email
         if(old!=email) {
+            inspectionAuthorized.value=null
             work.cancelAllWorkByTag(TAG).result.get()
             work.cancelAllWorkByTag(REMOVAL_TAG).result.get()
             update { clear(); putString("epoch",UUID.randomUUID().toString()); putBoolean("wifi",true) }
@@ -180,6 +192,7 @@ class FolioBackupRepository @Inject constructor(@ApplicationContext private val 
         if(cloudBlocked(email)) enqueuePurge(email)
     }
     suspend fun disconnect() {
+        inspectionAuthorized.value=null
         val email=state.value.email
         update { clear(); putString("epoch",UUID.randomUUID().toString()); putString("status","Not connected") }
         work.cancelAllWorkByTag(TAG).result.get()
@@ -402,7 +415,7 @@ class FolioBackupRepository @Inject constructor(@ApplicationContext private val 
         for(doc in snapshot.documents) {
             val key="$email:document:${doc.id}"; val previous=dao.backupRecord(key)
             if(previous!=null && previous.remoteId!=root) dao.save(previous.copy(key="$email:association:${previous.remoteId}:document:${doc.id}"))
-            val hashes=snapshot.pages.filter { it.page.documentId==doc.id }.flatMap { listOf(it.original,it.processed) }.toSet()
+            val hashes=snapshot.pages.filter { it.page.documentId==doc.id }.flatMap { listOf(it.original,it.processed) }.toSet()+listOf(doc.pdfHash).filter { it.isNotEmpty() }
             snapshot.pages.filter { it.page.documentId==doc.id }.forEach { page ->
                 val pageKey="$email:page:$root:${page.page.id}"
                 val old=dao.backupRecord(pageKey)?.session?.takeIf { it.isNotEmpty() }?.let { org.json.JSONArray(it) }
@@ -469,13 +482,21 @@ class FolioBackupRepository @Inject constructor(@ApplicationContext private val 
                 finally { bitmap.recycle() }
                 report(++done,total)
             }
-            manifest.documents.forEach { doc -> val prepared=File(dir,"documents/${doc.id}").apply { mkdirs() }; atomicWrite(File(prepared,"restore-owner"),id.toByteArray()) }
+            manifest.documents.forEach { doc ->
+                val prepared=File(dir,"documents/${doc.id}").apply { mkdirs() }
+                if(doc.pdfHash.isNotEmpty()) {
+                    val target=File(prepared,"pdf/${doc.pdfHash}.pdf").apply { parentFile!!.mkdirs() }
+                    File(dir,doc.pdfHash).inputStream().use { input -> target.outputStream().use { input.copyTo(it,65536) } }
+                    require(hashFile(target)==doc.pdfHash) { "Restored PDF checksum failed." }
+                }
+                atomicWrite(File(prepared,"restore-owner"),id.toByteArray())
+            }
             guard(); val restored=documents.mergeBackup(manifest,dir,id); report(total,total)
             val root=request.optString("rootId")
             if(root.isNotEmpty()) {
                 val mapping=readJson(File(dir,"merge.json")).getJSONObject("documents")
                 database.withTransaction { manifest.documents.filter { mapping.getString(it.id)==it.id }.forEach { doc ->
-                    val hashes=manifest.pages.filter { it.page.documentId==doc.id }.flatMap { listOf(it.original,it.processed) }.distinct()
+                    val hashes=(manifest.pages.filter { it.page.documentId==doc.id }.flatMap { listOf(it.original,it.processed) }+listOf(doc.pdfHash).filter { it.isNotEmpty() }).distinct()
                     dao.save(BackupRecord("$email:document:${doc.id}",root,"",0,doc.modifiedAt,"complete",org.json.JSONArray(hashes).toString()))
                     manifest.assets.filter { it.hash in hashes }.forEach { asset -> dao.save(BackupRecord("$email:asset:${asset.hash}",asset.remoteId,asset.hash,asset.bytes,doc.modifiedAt,"complete")) }
                 } }
@@ -502,6 +523,11 @@ class FolioBackupRepository @Inject constructor(@ApplicationContext private val 
                         hashes[hash]=BackupAsset(hash,bytes); return hash
                     }
                     BackupPage(page.copy(originalImageUri="",processedImageUri="",thumbnailUri=""),retain(page.originalImageUri),retain(page.processedImageUri))
+                }
+                pinned.documents.filter { it.pdfHash.isNotEmpty() }.forEach { doc ->
+                    val file=File(pins,doc.pdfHash); require(hashFile(file)==doc.pdfHash && file.length()<=BackupManifest.MAX_ASSET_BYTES)
+                    val destination=File(assetDir,doc.pdfHash); if(!destination.exists()) check(file.renameTo(destination))
+                    hashes[doc.pdfHash]=BackupAsset(doc.pdfHash,destination.length())
                 }
                 val manifest=BackupManifest(id,System.currentTimeMillis(),pinned.folders,pinned.documents,pages,hashes.values.toList(),pinned.ocr); manifest.validate(false)
                 atomicWrite(File(dir,"fingerprint"),BackupPlanner.fingerprint(origin).toByteArray())
@@ -533,7 +559,27 @@ class FolioBackupRepository @Inject constructor(@ApplicationContext private val 
             }
             val deleted=dao.driveDeletions().filter { (it.key.startsWith("$email:delete:") || it.key.startsWith("local:delete:")) }
             val manifest=snapshot.copy(assets=assets).withoutDeleted(deleted); manifest.validate(); val file=File(dir,"manifest.json"); atomicWrite(file,manifest.encode())
-            val hash=hashFile(file); upload("$email:manifest:$id",hash,file.length(),file,"manifest","manifest-${snapshot.createdAt}-$id.json")
+            val prior=manifestGenerations(remote,root,dir).firstOrNull()
+            var reused:String?=null
+            if(prior!=null) {
+                val previous=File(dir,"previous.json")
+                remote.download(prior.file.id,previous,BackupManifest.MAX_MANIFEST_BYTES.toLong())
+                if(hashFile(previous)==prior.checksum) {
+                    val old=BackupManifest.decode(previous.readBytes())
+                    if(sameBackupContent(old,manifest) && old.assets.all { remote.exists(it.remoteId) }) {
+                        reused=prior.file.id
+                        dao.save(BackupRecord("$email:manifest:$id",prior.file.id,prior.checksum,previous.length(),System.currentTimeMillis(),"complete",root))
+                    }
+                }
+                previous.delete()
+            }
+            val currentManifest=reused ?: upload("$email:manifest:$id",hashFile(file),file.length(),file,"manifest","manifest-${snapshot.createdAt}-$id.json")
+            guard()
+            val removed=retainManifests(remote,root,currentManifest,dir)
+            if(removed.isNotEmpty()) database.withTransaction {
+                dao.backupRecords("$email:manifest:").filter { it.remoteId in removed && it.session==root }
+                    .forEach { dao.deleteBackupRecord(it.key) }
+            }
             guard(); val docHashes=JSONObject(File(dir,"document-hashes.json").readText())
             database.withTransaction { snapshot.documents.forEach { doc ->
                 val key="$email:document:${doc.id}"; val existing=dao.backupRecord(key)

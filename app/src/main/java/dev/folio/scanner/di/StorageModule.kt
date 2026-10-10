@@ -23,7 +23,14 @@ object StorageModule {
         }
     @Provides @Singleton
     fun database(@ApplicationContext context: Context): FolioDatabase =
-        Room.databaseBuilder(context, FolioDatabase::class.java, "folio.db").addMigrations(migration1To2, migration2To3, migration3To4, migration4To5, migration5To6, migration6To7).addCallback(ocrCallback).build()
+        Room.databaseBuilder(context, FolioDatabase::class.java, "folio.db").addMigrations(migration1To2, migration2To3, migration3To4, migration4To5, migration5To6, migration6To7, migration7To8).addCallback(ocrCallback).build()
+    val migration7To8 = object : androidx.room.migration.Migration(7,8) {
+        override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE documents ADD COLUMN pdfHash TEXT NOT NULL DEFAULT ''")
+            db.execSQL("ALTER TABLE documents ADD COLUMN pdfRevision INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE documents ADD COLUMN importedPdf INTEGER NOT NULL DEFAULT 0")
+        }
+    }
     val migration6To7 = object : androidx.room.migration.Migration(6,7) {
         override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
             db.execSQL("ALTER TABLE pages ADD COLUMN trashedAt INTEGER DEFAULT NULL")

@@ -1,51 +1,34 @@
-# Optional Google Drive backup
+# Google Drive Backup
 
-## Public release access
+## Availability
 
-**Google Drive Backup is currently restricted to approved Google OAuth test users.**
+Google Drive Backup is optional and currently restricted to approved Google OAuth test users. Accounts without approved access cannot connect. Scanning, editing, OCR and PDF tools work without a Google account.
 
-Users of a downloaded Folio APK must contact the project owner with the Google account email address they intend to use. The owner must add that account to the Google Cloud OAuth **Test Users** list before sign-in/backup can work. Use the public contact method provided by the project repository/profile, if available. No personal contact address or existing test-user accounts are published here.
+## Connect and back up
 
-Unrestricted Google accounts are **not** currently supported by the owner's public release configuration. This source archive has no owner Client ID. Builders configure their own Cloud project and OAuth users.
+Open **Google Drive Backup** in Folio's settings and connect an eligible Google account. Complete Google's consent flow when prompted.
 
-## Set up a source build
+Connecting an account does not upload documents. Automatic backup requires explicit opt-in.
 
-1. Create/use your own Google Cloud project and enable Google Drive API.
-2. Configure its OAuth consent screen. While in Testing, add the intended account to **Test Users**. Configure the scopes used below.
-3. Create an **Android** OAuth client for package `dev.folio.scanner` and the SHA-1 of the certificate signing your APK. `gradlew :app:signingReport` shows your local debug certificate; production signing needs its own registration.
-4. Create a **Web application** OAuth client in that same Cloud project. Folio's Credential Manager uses its public Client ID as `serverClientId`.
-5. Put only that public ID in ignored root `local.properties`:
+On a fresh installation, uploads remain locked until an existing, nonempty Folio backup has been restored. An account with no existing backup cannot create its first backup through this flow.
 
-   ```properties
-   folio.google.webClientId=YOUR_WEB_CLIENT_ID.apps.googleusercontent.com
-   ```
+Backups include saved library PDFs, original and edited page images, document metadata, recoverable Recycle Bin contents and supported OCR results. External exports, unfinished scans and temporary PDF Workspace sessions are excluded.
 
-6. Rebuild/install the app. Connect your account from Google Drive Backup settings and complete Google's consent flow on a device with Google Play services.
+## Permissions
 
-**Never add a Web OAuth client secret**, service account or private key. Missing/placeholder IDs keep the app buildable and show the configuration-required UI.
+Folio requests permission to manage its Google Drive backup files. Optional **Authorize safe folder inspection** grants read-only access to Drive metadata so Folio can check folder contents before deletion. Files whose ownership cannot be established are left untouched.
 
-Folio requests `https://www.googleapis.com/auth/drive.file` for its backup resources. Optional **Authorize safe folder inspection** requests `https://www.googleapis.com/auth/drive.metadata.readonly` so cloud purge can review folder children without assuming their ownership. This read-only metadata scope is broader visibility; content deletion remains restricted by Folio's ownership checks and the write scope. Configure this scope if Google's consent setup requires it.
+## Restore
 
-## Current backup behavior
+Restore imports an existing Folio backup into the local library. Keep a separate copy of important documents and review restored content before relying on it.
 
-Connecting does not immediately upload. Automatic backup is off until explicitly enabled. Backup transfers use WorkManager, durable Room state and account-associated mappings; interruptions/authentication failures can require retry or sign-in.
+## Delete and disconnect
 
-The current **restore-first safety policy** locks fresh-install uploads until an existing **nonempty** Folio backup is restored. A brand-new account with no existing backup cannot establish its first backup through that fresh-install flow. This package preserves that behavior rather than weakening the safety lock.
+- Moving documents or pages to the Recycle Bin keeps their backup data recoverable.
+- Permanent deletion queues removal of the corresponding backup data. Removal may remain pending while offline, signed out or awaiting an ownership check. **Retry Drive removals** retries pending work.
+- **Delete All Cloud Backup** permanently removes identified Folio backup data. It requires two confirmations, including typing uppercase `DELETE`. Local documents remain on the device.
+- After a successful cloud purge, automatic backup does not recreate the deleted backup. When uploads are available, **Back Up Now** can create a new backup deliberately.
+- Pending operations belong to the account that requested them. Connecting a different account does not transfer those operations.
+- Disconnecting leaves the cloud backup intact. Deleting a cloud backup does not disconnect the account.
 
-Backups contain original and processed page images, library/page metadata, recoverable trash and compatible OCR results. Exported PDFs, unfinished scanner drafts and annotations are not backed up. Restore checks cloud data before importing it; it does not mean every historical model/version is compatible.
-
-## Deletion and account safety
-
-- Moving documents/pages to Recycle Bin keeps their cloud-backed contents recoverable.
-- Permanent local deletion queues corresponding cloud removal. The cloud may remain until network, authentication and ownership checks succeed. **Retry Drive removals** retries durable removal work.
-- **Delete All Cloud Backup** uses two confirmations, including exact uppercase `DELETE`. It removes positively identified Folio backup resources and leaves local documents intact. Unknown ownership is left for review; explicit confirmation does not override that boundary.
-- Purge verifies cloud absence, distinguishes pending/failed/ambiguous work, and resumes after interruption. Successful purge suppresses automatic recreation; an upload-eligible user can explicitly choose **Back Up Now** to create another backup.
-- Pending cloud operations are tied to their Google account; signing into another account must not execute the first account's removals.
-- Disconnecting does not delete cloud data; purging does not disconnect the account.
-
-## Live checks
-
-Use a dedicated test account and nonsensitive sample documents. Authenticate, verify Folio's backup resources, and leave an unrelated Drive file as a safety control. Test restore, permanent deletion, offline retry and explicit purge; then independently query Drive to verify resource absence and retention of the unrelated file. Check that local documents remain, automatic upload stays suppressed after purge, and an eligible explicit backup creates new resources.
-
-The public source tests use fake Drive transports. Account-specific destructive live-test harnesses are excluded. Release-package verification does not authenticate, delete or recreate the owner's real Drive backup.
-
+Cloud deletion cannot be undone. Folio shows pending, failed or review-required status when deletion has not completed.
