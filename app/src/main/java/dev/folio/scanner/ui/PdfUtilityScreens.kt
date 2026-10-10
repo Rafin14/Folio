@@ -176,7 +176,7 @@ fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(S
     if(passwordDialog) AlertDialog(onDismissRequest={ passwordDialog=false; picked=emptyList(); password="" },title={ Text("Open selected PDF") },text={ Column { Text("The source stays untouched. Enter its owner password only if protected."); OutlinedTextField(password,{ password=it },label={ Text("Owner password, if needed") },visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation(),singleLine=true) } },confirmButton={ Button(onClick=::acceptInput,enabled=!busy) { Text("Open") } },dismissButton={ OutlinedButton(onClick={ passwordDialog=false; password=""; picked=emptyList() }) { Text("Cancel") } })
     if(chooseSource) PdfSourceDialog(when(kind) {"split" -> "Split PDF";"merge" -> if(addingMerge) "Add PDF" else "Merge PDF";"raster" -> "PDF to Image";else -> "Edit PDF"},{chooseSource=false;if(kind=="merge" && !addingMerge) mergeInput.launch(arrayOf("application/pdf")) else pdfInput.launch(arrayOf("application/pdf"))},{chooseSource=false;chooseManaged=true},{chooseSource=false})
     if(chooseManaged) {
-        if(kind=="edit") ManagedPdfChooser(model,{chooseManaged=false},::acceptFolio)
+        if(kind in listOf("split","merge","edit")) ManagedPdfChooser(model,{chooseManaged=false},::acceptFolio)
         else FolioPageChooser(model,false,{chooseManaged=false},selectDocument=::acceptFolio) {}
     }
     if(chooseDocs) FolioPageChooser(model,false,{ chooseDocs=false }) { selected -> model.run {

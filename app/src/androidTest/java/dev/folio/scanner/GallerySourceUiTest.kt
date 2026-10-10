@@ -87,7 +87,7 @@ class GallerySourceUiTest {
             assertArrayEquals(original,source.readBytes());capture("pdf-list-reordered")
         } finally {runBlocking {utility.discard(id)};source.delete()}
     }
-    @Test fun splitMergeAndRasterOfferStorageAndFolioAndMergeAcceptsBothDocumentTypes() {
+    @Test fun splitMergeAndEditOfferOnlyFolioPdfsWhileRasterKeepsDocuments() {
         val source=File(context.cacheDir,"tools-${UUID.randomUUID()}.pdf")
         PdfDocument(PdfWriter(source)).use {p ->repeat(2) {p.addNewPage()}}
         val pdf=runBlocking {repo.importPdf(source,"Source PDF",utility.engine)};val scan=runBlocking {repo.create("Source scan")}
@@ -102,20 +102,27 @@ class GallerySourceUiTest {
                 repeat(4) {if(device.hasObject(By.pkg("com.google.android.documentsui"))) {device.pressBack();device.waitForIdle()}}
                 waitText("Split PDF")
                 compose.onNodeWithText(label,substring=false).performScrollTo().performClick();compose.onNodeWithText("Folio Documents").performClick();waitDescription("Open Folio document Source PDF")
+                if(kind=="raster") compose.onNodeWithContentDescription("Open Folio document Source scan").assertIsDisplayed()
+                else {compose.onNodeWithText("Folio PDFs").assertIsDisplayed();compose.onNodeWithContentDescription("Open Folio document Source scan").assertDoesNotExist()}
+                capture("$kind-folio-picker")
                 compose.onNodeWithContentDescription("Open Folio document Source PDF").performClick();val pending=utility.pending().toSet()
-                compose.onNodeWithText("Use document").performClick()
+                compose.onNodeWithText(if(kind=="raster") "Use document" else "Open PDF").performClick()
                 compose.waitUntil(30000) {utility.pending().any {it !in pending}}
                 val id=utility.pending().single {it !in pending};sessions+=id
                 assertEquals(kind,utility.session(id).getString("kind"));assertEquals(2,utility.session(id).getJSONArray("counts").getInt(0))
                 if(kind=="merge") {
-                    waitText("Add PDF");compose.onNodeWithText("Add PDF").performScrollTo().performClick();compose.onNodeWithText("Folio Documents").performClick();waitDescription("Open Folio document Source scan")
-                    compose.onNodeWithContentDescription("Open Folio document Source scan").performClick();compose.onNodeWithText("Use document").performClick()
+                    waitText("Add PDF");compose.onNodeWithText("Add PDF").performScrollTo().performClick();compose.onNodeWithText("Folio Documents").performClick();waitDescription("Open Folio document Source PDF")
+                    compose.onNodeWithContentDescription("Open Folio document Source scan").assertDoesNotExist();capture("merge-add-folio-picker")
+                    compose.onNodeWithContentDescription("Open Folio document Source PDF").performClick();compose.onNodeWithText("Open PDF").performClick()
                     compose.waitUntil(30000) {utility.session(id).getJSONArray("order").length()==2}
-                    assertEquals(1,utility.session(id).getJSONArray("counts").getInt(1));capture("merge-mixed-sources")
+                    assertEquals(2,utility.session(id).getJSONArray("counts").getInt(1));capture("merge-pdf-sources")
                 }
                 compose.onNodeWithText("Discard operation").performScrollTo().performClick();waitText("Discard Changes and Leave")
                 compose.onNodeWithText("Discard Changes and Leave").performClick();compose.waitUntil(20000) {!utility.folder(id,create=false).exists()};waitText("Split PDF")
             }
+            compose.onNodeWithText("Edit PDF",substring=false).performScrollTo().performClick();compose.onNodeWithText("Folio Documents").performClick();waitDescription("Open Folio document Source PDF")
+            compose.onNodeWithText("Folio PDFs").assertIsDisplayed();compose.onNodeWithContentDescription("Open Folio document Source scan").assertDoesNotExist();capture("edit-folio-picker")
+            compose.onNodeWithContentDescription("Close Folio selection").performClick()
             assertEquals(2,runBlocking {repo.dao.pages(pdf).size});assertEquals(1,runBlocking {repo.dao.pages(scan).size})
         } finally {runBlocking {sessions.forEach {utility.discard(it)};repo.purgeForTest(pdf);repo.purgeForTest(scan)};source.delete()}
     }
