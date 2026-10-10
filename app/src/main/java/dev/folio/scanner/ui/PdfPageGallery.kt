@@ -8,6 +8,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.edit
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -33,6 +39,9 @@ import kotlinx.coroutines.sync.withLock
 @Composable
 internal fun PdfPageGallery(id:String,pages:List<UtilityPage>,title:String,managed:Boolean,
     model:LibraryViewModel,selectedPage:Int,back:()->Unit,saveToFolio:(()->Unit)?=null,saving:Boolean=false,reordered:(List<UtilityPage>)->Unit={},openPage:(Int)->Unit) {
+    val context=LocalContext.current
+    val preferences=remember { context.getSharedPreferences("appearance",0) }
+    var grid by rememberSaveable { mutableStateOf(preferences.getBoolean("pdfGalleryGrid",true)) }
     val rendering=remember(id) {Mutex()}
     var ordered by remember(id,pages) {mutableStateOf(pages)}
     val bounds=remember(id) {mutableStateMapOf<String,Rect>()}
@@ -57,8 +66,8 @@ internal fun PdfPageGallery(id:String,pages:List<UtilityPage>,title:String,manag
     Scaffold(topBar={TopAppBar(title={Column {
         Text(title,maxLines=1,overflow=TextOverflow.Ellipsis)
         Text("${pages.size} pages · ${if(managed) "Folio PDF" else "Device PDF"}",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
-    }},navigationIcon={IconButton(onClick=back,enabled=!saving) {Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back")}},actions={saveToFolio?.let {FilledTonalButton(onClick=it,enabled=!saving) {Text(if(saving) "Saving…" else "Save to Folio")}}})}) {padding ->
-        LazyVerticalGrid(GridCells.Adaptive(150.dp),Modifier.fillMaxSize().padding(padding).onGloballyPositioned {gridBounds=it.boundsInRoot()}.semantics {contentDescription="PDF page gallery"},state=gridState,
+    }},navigationIcon={IconButton(onClick=back,enabled=!saving) {Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back")}},actions={IconButton(onClick={grid=!grid;preferences.edit {putBoolean("pdfGalleryGrid",grid)}},enabled=dragging==null) {Icon(if(grid) Icons.AutoMirrored.Filled.List else Icons.Outlined.GridView,if(grid) "List view" else "Grid view")};saveToFolio?.let {FilledTonalButton(onClick=it,enabled=!saving) {Text(if(saving) "Saving…" else "Save to Folio")}}})}) {padding ->
+        LazyVerticalGrid(if(grid) GridCells.Adaptive(150.dp) else GridCells.Fixed(1),Modifier.fillMaxSize().padding(padding).onGloballyPositioned {gridBounds=it.boundsInRoot()}.semantics {contentDescription="PDF page gallery"},state=gridState,
             contentPadding=PaddingValues(16.dp),horizontalArrangement=Arrangement.spacedBy(12.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
             itemsIndexed(ordered,key={_,page -> page.id}) {index,page ->
                 DisposableEffect(page.id) {onDispose {bounds.remove(page.id)}}
@@ -69,6 +78,7 @@ internal fun PdfPageGallery(id:String,pages:List<UtilityPage>,title:String,manag
                     catch(_:Exception) {failed=true}
                 }
                 val selected=page.id==activePage
+                val caption=if(dragging!=null && target==page.id && dragging!=page.id) "Move to position ${index+1}" else "Page ${index+1}"
                 Column(Modifier.animateItem().onGloballyPositioned {bounds[page.id]=it.boundsInRoot()}.zIndex(if(dragging==page.id) 1f else 0f).graphicsLayer {if(dragging==page.id) {translationX=dragOffset.x;translationY=dragOffset.y+dragScroll;scaleX=1.04f;scaleY=1.04f}}.pageDragGesture(page.id,ordered.map {it.id},bounds,{dragging=it;dragScroll=0f;dragOrigin=it?.let {key ->bounds[key]?.center} ?: Offset.Zero},{target=it},{dragOffset=it},{},drop={order ->
                     ordered=order.map {key -> ordered.first {it.id==key}};model.utility.updatePages(id,ordered);reordered(ordered)
                 })) {
@@ -76,12 +86,15 @@ internal fun PdfPageGallery(id:String,pages:List<UtilityPage>,title:String,manag
                         color=if(selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
                         border=BorderStroke(if(selected || target==page.id) 2.dp else 1.dp,if(selected || target==page.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
                         modifier=Modifier.semantics {contentDescription="Open PDF page ${index+1}";this.selected=selected;stateDescription=if(failed) "Preview unavailable" else if(image==null) "Loading preview" else "Preview loaded"}) {
-                        Box(Modifier.fillMaxWidth().aspectRatio(.75f).padding(6.dp),contentAlignment=Alignment.Center) {
+                        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+                        Box((if(grid) Modifier.fillMaxWidth().aspectRatio(.75f) else Modifier.size(96.dp,128.dp)).padding(6.dp),contentAlignment=Alignment.Center) {
                             image?.let {Image(it.asImageBitmap(),"PDF page ${index+1} thumbnail",Modifier.fillMaxSize())}
                                 ?: if(failed) Text("Preview unavailable",style=MaterialTheme.typography.bodySmall) else CircularProgressIndicator(Modifier.size(24.dp))
                         }
+                        if(!grid) {Text(caption,Modifier.weight(1f).padding(12.dp),style=MaterialTheme.typography.titleMedium);Icon(Icons.Outlined.ChevronRight,null,Modifier.padding(end=12.dp))}
+                        }
                     }
-                    Text(if(dragging!=null && target==page.id && dragging!=page.id) "Move to position ${index+1}" else "Page ${index+1}",Modifier.padding(top=6.dp),style=MaterialTheme.typography.titleSmall,color=if(target==page.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                    if(grid) Text(caption,Modifier.padding(top=6.dp),style=MaterialTheme.typography.titleSmall,color=if(target==page.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
                 }
             }
         }

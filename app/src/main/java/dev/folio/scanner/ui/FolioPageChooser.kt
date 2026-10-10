@@ -28,10 +28,11 @@ import kotlinx.coroutines.withContext
 /** One compact read-only library browser, with single-page or ordered multi-page selection. */
 @Composable
 internal fun FolioPageChooser(model:LibraryViewModel,single:Boolean,dismiss:()->Unit,pdfOnly:Boolean=false,selectDocument:((String)->Unit)?=null,accept:(List<FolioPageChoice>)->Unit) {
+    val choosingDocument=selectDocument!=null
     val library by model.state.collectAsStateWithLifecycle()
     val busy by model.busy.collectAsStateWithLifecycle()
     val allPages by produceState<List<Page>?>(null,library.documents) {
-        value=if(pdfOnly) emptyList() else withContext(Dispatchers.IO) { model.repository.dao.allPages().filter { it.trashedAt==null && library.documents.any { d -> d.id==it.documentId } } }
+        value=if(choosingDocument) emptyList() else withContext(Dispatchers.IO) { model.repository.dao.allPages().filter { it.trashedAt==null && library.documents.any { d -> d.id==it.documentId } } }
     }
     val pages=allPages.orEmpty()
     var selectedDocument by rememberSaveable { mutableStateOf("") }
@@ -48,29 +49,29 @@ internal fun FolioPageChooser(model:LibraryViewModel,single:Boolean,dismiss:()->
             Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment=Alignment.CenterVertically) {
                     if(documentId.isNotEmpty()) IconButton(onClick={ documentId="" }) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back to Folio documents") }
-                    Text(document?.title ?: if(pdfOnly) "Folio PDFs" else if(single) "Choose Folio page" else "Generate PDF",Modifier.weight(1f),style=MaterialTheme.typography.titleLarge,maxLines=2,overflow=TextOverflow.Ellipsis)
+                    Text(document?.title ?: if(choosingDocument) (if(pdfOnly) "Folio PDFs" else "Folio Documents") else if(single) "Choose Folio page" else "Generate PDF",Modifier.weight(1f),style=MaterialTheme.typography.titleLarge,maxLines=2,overflow=TextOverflow.Ellipsis)
                     IconButton(onClick=dismiss,enabled=!busy) { Icon(Icons.Outlined.Close,"Close Folio selection") }
                 }
-                Text(if(pdfOnly) "Select a PDF to continue." else if(single) "Choose one page. Folio keeps the original." else "Check a document for all pages, or open it to choose pages. Numbers show PDF order.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(if(choosingDocument) (if(pdfOnly) "Select a PDF to continue." else "Select a document to continue.") else if(single) "Choose one page. Folio keeps the original." else "Check a document for all pages, or open it to choose pages. Numbers show PDF order.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                 if(allPages==null) LinearProgressIndicator(Modifier.fillMaxWidth())
-                val visible=if(documentId.isEmpty()) library.documents.filter { d -> if(pdfOnly) d.importedPdf else pages.any { it.documentId==d.id } } else emptyList()
+                val visible=if(documentId.isEmpty()) library.documents.filter { d -> if(choosingDocument) (if(pdfOnly) d.importedPdf else d.pageCount>0) else pages.any { it.documentId==d.id } } else emptyList()
                 LazyVerticalGrid(GridCells.Adaptive(120.dp),Modifier.weight(1f,fill=false),horizontalArrangement=Arrangement.spacedBy(12.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                    if(allPages!=null && (if(pdfOnly) visible.isEmpty() else pages.isEmpty())) item(span={ GridItemSpan(maxLineSpan) }) { Text(if(pdfOnly) "No PDFs available. Import a PDF from Home." else "No pages available",Modifier.padding(vertical=24.dp)) }
+                    if(allPages!=null && (if(choosingDocument) visible.isEmpty() else pages.isEmpty())) item(span={ GridItemSpan(maxLineSpan) }) { Text(if(choosingDocument) (if(pdfOnly) "No PDFs available. Import a PDF from Home." else "No documents with pages available.") else "No pages available",Modifier.padding(vertical=24.dp)) }
                     if(documentId.isEmpty()) items(visible,key={ it.id }) { doc ->
                         val docPages=pages.filter { it.documentId==doc.id }.sortedBy { it.position }
-                        val count=docPages.count { it.id in selectedIds }; val whole=if(pdfOnly) selectedDocument==doc.id else count==docPages.size
+                        val count=docPages.count { it.id in selectedIds }; val whole=if(choosingDocument) selectedDocument==doc.id else count==docPages.size
                         Column(Modifier.semantics { this.selected=whole }) {
-                            Surface(onClick={ if(pdfOnly) selectedDocument=doc.id else documentId=doc.id },shape=MaterialTheme.shapes.small,color=if(whole) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,border=BorderStroke(if(whole) 2.dp else 1.dp,if(whole) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.semantics { contentDescription="Open Folio document ${doc.title}"; this.selected=whole }) {
+                            Surface(onClick={ if(choosingDocument) selectedDocument=doc.id else documentId=doc.id },shape=MaterialTheme.shapes.small,color=if(whole) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,border=BorderStroke(if(whole) 2.dp else 1.dp,if(whole) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.semantics { contentDescription="Open Folio document ${doc.title}"; this.selected=whole }) {
                                 Box {
-                                    if(pdfOnly) DocumentCover(doc,model,Modifier.fillMaxWidth().aspectRatio(.78f).padding(4.dp))
+                                    if(choosingDocument) DocumentCover(doc,model,Modifier.fillMaxWidth().aspectRatio(.78f).padding(4.dp))
                                     else PageThumbnail(docPages.first(),model,"Document cover ${doc.title}",Modifier.fillMaxWidth().aspectRatio(.78f).padding(4.dp))
                                     if(doc.importedPdf) PdfBadge(Modifier.align(Alignment.BottomStart).padding(8.dp))
                                     if(whole) Surface(Modifier.align(Alignment.TopEnd).padding(6.dp),shape=MaterialTheme.shapes.small,color=MaterialTheme.colorScheme.primary,contentColor=MaterialTheme.colorScheme.onPrimary) {Text("✓",Modifier.padding(8.dp))}
                                 }
                             }
                             Row(verticalAlignment=Alignment.CenterVertically) {
-                                if(!single && !pdfOnly) Checkbox(whole,{ checked -> selectedIds=if(checked) selectedIds+docPages.map { it.id }.filter { it !in selectedIds } else selectedIds-docPages.map { it.id }.toSet() },Modifier.semantics { contentDescription="Select whole document ${doc.title}" })
-                                Column(Modifier.weight(1f)) { Text(doc.title,Modifier.clickable { if(pdfOnly) selectedDocument=doc.id else documentId=doc.id },style=MaterialTheme.typography.titleSmall,maxLines=2,overflow=TextOverflow.Ellipsis); Text(if(pdfOnly) "${doc.pageCount} pages" else if(count==0) "${docPages.size} pages" else if(whole) "All ${docPages.size} pages" else "$count pages selected",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
+                                if(!single && !choosingDocument) Checkbox(whole,{ checked -> selectedIds=if(checked) selectedIds+docPages.map { it.id }.filter { it !in selectedIds } else selectedIds-docPages.map { it.id }.toSet() },Modifier.semantics { contentDescription="Select whole document ${doc.title}" })
+                                Column(Modifier.weight(1f)) { Text(doc.title,Modifier.clickable { if(choosingDocument) selectedDocument=doc.id else documentId=doc.id },style=MaterialTheme.typography.titleSmall,maxLines=2,overflow=TextOverflow.Ellipsis); Text(if(choosingDocument) "${doc.pageCount} pages" else if(count==0) "${docPages.size} pages" else if(whole) "All ${docPages.size} pages" else "$count pages selected",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
                             }
                         }
                     } else items(pages.filter { it.documentId==documentId }.sortedBy { it.position },key={ it.id }) { page ->
@@ -88,8 +89,8 @@ internal fun FolioPageChooser(model:LibraryViewModel,single:Boolean,dismiss:()->
                 }
                 HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant.copy(alpha=.6f))
                 Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-                    Text(if(pdfOnly) (if(selectedDocument.isEmpty()) "Select a PDF" else "1 PDF selected") else "${selected.size} ${if(single) "page" else "pages"} selected",Modifier.weight(1f),style=MaterialTheme.typography.labelLarge)
-                    Button(onClick={ if(pdfOnly) selectDocument?.invoke(selectedDocument) else accept(selected) },enabled=!busy && (if(pdfOnly) selectedDocument.isNotEmpty() else selected.isNotEmpty() && selected.size<=500),modifier=Modifier.heightIn(min=48.dp)) { Text(if(pdfOnly) "Open PDF" else if(single) "Use selected page" else "Continue") }
+                    Text(if(choosingDocument) (if(selectedDocument.isEmpty()) (if(pdfOnly) "Select a PDF" else "Select a document") else if(pdfOnly) "1 PDF selected" else "1 document selected") else "${selected.size} ${if(single) "page" else "pages"} selected",Modifier.weight(1f),style=MaterialTheme.typography.labelLarge)
+                    Button(onClick={ if(choosingDocument) selectDocument?.invoke(selectedDocument) else accept(selected) },enabled=!busy && (if(choosingDocument) selectedDocument.isNotEmpty() else selected.isNotEmpty() && selected.size<=500),modifier=Modifier.heightIn(min=48.dp)) { Text(if(choosingDocument) (if(pdfOnly) "Open PDF" else "Use document") else if(single) "Use selected page" else "Continue") }
                 }
                 if(selected.size>500) Text("Select at most 500 pages.",color=MaterialTheme.colorScheme.error)
             }

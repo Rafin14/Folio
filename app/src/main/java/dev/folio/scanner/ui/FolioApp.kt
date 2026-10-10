@@ -252,7 +252,7 @@ private fun LibraryScreen(state: LibraryState, busy: Boolean, model: LibraryView
                         items(docs,key={ "name-${it.id}" }) { d -> DocumentTile(d,model,{ click(d) },{ if(selection.isEmpty()) selected=d else toggle(d.id) },d.id in selection,{ toggle(d.id); focus.clearFocus() }) }
                         items(visibleHits,key={ "ocr-${it.pageId}" }) { hit -> SearchPageResult(hit,model,true) { openPage(hit.documentId,hit.pageId) } }
                         if(docs.isEmpty() && visibleHits.isEmpty()) item(span={ GridItemSpan(maxLineSpan) }) { EmptyState(Icons.Outlined.Search,"No matches","Try another name or word. Pages become searchable as recognition finishes.") }
-                    } else LazyColumn(Modifier.weight(1f),contentPadding=PaddingValues(bottom=100.dp)) {
+                    } else LazyColumn(Modifier.weight(1f),contentPadding=PaddingValues(bottom=100.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
                         items(docs,key={ "name-${it.id}" }) { d -> ListItem(colors=ListItemDefaults.colors(containerColor=if(d.id in selection) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface),headlineContent={ Text(d.title) },supportingContent={ Text("${d.pageCount} pages · Document name") },leadingContent={ DocumentCover(d,model,Modifier.size(56.dp,72.dp)) },trailingContent={ IconButton(onClick={ if(selection.isEmpty()) selected=d else toggle(d.id) }) { Icon(if(d.id in selection) Icons.Outlined.CheckCircle else Icons.Outlined.MoreVert,"Actions for ${d.title}") } },modifier=Modifier.selectionAppearance(d.id in selection).combinedClickable(onClick={ click(d) },onLongClick={ toggle(d.id); focus.clearFocus() })) }
                         items(visibleHits,key={ "ocr-${it.pageId}" }) { hit -> SearchPageResult(hit,model,false) { openPage(hit.documentId,hit.pageId) } }
                         if(docs.isEmpty() && visibleHits.isEmpty()) item { EmptyState(Icons.Outlined.Search,"No matches","Try another name or word. Pages become searchable as recognition finishes.") }
@@ -265,7 +265,7 @@ private fun LibraryScreen(state: LibraryState, busy: Boolean, model: LibraryView
                     grid -> LazyVerticalGrid(GridCells.Adaptive(150.dp), Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp), contentPadding = PaddingValues(bottom = 100.dp)) {
                         items(docs, key = { it.id }) { doc -> DocumentTile(doc,model,{ click(doc) },{ if(selection.isEmpty()) selected=doc else toggle(doc.id) },doc.id in selection,{ toggle(doc.id); focus.clearFocus() }) }
                     }
-                    else -> LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 100.dp)) {
+                    else -> LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         items(docs, key = { it.id }) { doc ->
                             ListItem(colors=ListItemDefaults.colors(containerColor=if(doc.id in selection) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface),headlineContent = { Text(doc.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                 supportingContent = { Text("${doc.pageCount} pages · ${date(doc.modifiedAt)}") }, leadingContent = { DocumentCover(doc,model,Modifier.size(56.dp,72.dp)) },

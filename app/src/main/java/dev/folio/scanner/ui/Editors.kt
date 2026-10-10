@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.edit
 import androidx.compose.material.icons.automirrored.outlined.RotateRight
 import androidx.compose.material.icons.automirrored.outlined.TextSnippet
 import androidx.compose.material.icons.outlined.*
@@ -48,6 +51,9 @@ fun DocumentEditor(doc: Document?, model: LibraryViewModel, back: () -> Unit, sc
     var pageAction by remember { mutableStateOf<Page?>(null) }
     var renaming by remember { mutableStateOf<Page?>(null) }
     var highlighted by rememberSaveable(matchPage) { mutableStateOf(matchPage) }
+    val context=LocalContext.current
+    val preferences=remember { context.getSharedPreferences("appearance",0) }
+    var grid by rememberSaveable { mutableStateOf(preferences.getBoolean("documentGalleryGrid",true)) }
     val gridState=rememberLazyGridState()
     val reorderBounds=remember { mutableStateMapOf<String,androidx.compose.ui.geometry.Rect>() }
     var draggedPage by remember { mutableStateOf<String?>(null) }
@@ -84,6 +90,7 @@ fun DocumentEditor(doc: Document?, model: LibraryViewModel, back: () -> Unit, sc
     Scaffold(topBar = { TopAppBar(title = { Text(if(selected.isEmpty()) doc?.title ?: "Document" else "${selected.size} selected",maxLines=1,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis) },navigationIcon={
         IconButton(onClick={ if(selected.isNotEmpty()) selected=emptyList() else back() }) { if(selected.isNotEmpty()) Icon(Icons.Outlined.Close,"Cancel selection") else Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back") }
     },actions={
+        IconButton(onClick={ grid=!grid; preferences.edit { putBoolean("documentGalleryGrid",grid) } },enabled=draggedPage==null) { Icon(if(grid) Icons.AutoMirrored.Filled.List else Icons.Outlined.GridView,if(grid) "List view" else "Grid view") }
         if(doc!=null) IconButton(onClick={ sharing=true },enabled=scopedPages.isNotEmpty()) { Icon(Icons.Outlined.Share,if(selected.isEmpty()) "Share document" else "Share selected pages") }
         if(selected.isNotEmpty()) IconButton(onClick={ deleting=true }) { Icon(Icons.Outlined.Delete,"Delete selected pages") }
         if(doc!=null) Box {
@@ -119,21 +126,28 @@ fun DocumentEditor(doc: Document?, model: LibraryViewModel, back: () -> Unit, sc
                     Text(if (doc == null) "Document unavailable" else "A fresh start", style = MaterialTheme.typography.headlineMedium)
                     Text(if (doc == null) "Return to your library." else "Your document is saved. It has no pages yet.")
                 }
-            } else LazyVerticalGrid(GridCells.Adaptive(156.dp), Modifier.weight(1f).padding(horizontal = 16.dp).padding(bottom=80.dp), state=gridState, horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
-                items(pages, key = { it.id }) { page -> Column(Modifier.animateItem().zIndex(if(draggedPage==page.id) 1f else 0f).graphicsLayer { scaleX=if(draggedPage==page.id) 1.035f else 1f; scaleY=scaleX; alpha=if(draggedPage==page.id) .92f else 1f; translationX=if(draggedPage==page.id) dragOffset.x else 0f; translationY=if(draggedPage==page.id) dragOffset.y else 0f }.onGloballyPositioned { reorderBounds[page.id]=it.boundsInRoot() }.clickable { highlighted=""; if(selected.isNotEmpty()) toggle(page.id) else edit(page.id) }.then(Modifier.pageDragGesture(page.id,pages.map { it.id },reorderBounds,{ draggedPage=it },{ dragTarget=it },{ dragOffset=it },{ toggle(page.id) },{ ids -> model.run { model.repository.reorder(documentId,ids) } }))) {
+            } else LazyVerticalGrid(if(grid) GridCells.Adaptive(156.dp) else GridCells.Fixed(1), Modifier.weight(1f).padding(horizontal = 16.dp).padding(bottom=80.dp), state=gridState, horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
+                items(pages, key = { it.id }) { page ->
+                    @Composable fun pageActions(modifier:Modifier=Modifier) {
+                        Row(modifier,verticalAlignment=Alignment.CenterVertically) {
+                            Checkbox(page.id in selected,{ checked -> selected=if(checked) selected+page.id else selected-page.id },modifier=Modifier.semantics { contentDescription="Select ${if(page.pageName==null) "page ${page.position+1}" else page.label()}" })
+                            Text(page.label(),Modifier.weight(1f),maxLines=2,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis,style=MaterialTheme.typography.titleMedium)
+                            IconButton(onClick={ pageAction=page }) { Icon(Icons.Outlined.MoreVert,"Actions for ${if(page.pageName==null) "page ${page.position+1}" else page.label()}") }
+                        }
+                    }
+                    Column(Modifier.animateItem().zIndex(if(draggedPage==page.id) 1f else 0f).graphicsLayer { scaleX=if(draggedPage==page.id) 1.035f else 1f; scaleY=scaleX; alpha=if(draggedPage==page.id) .92f else 1f; translationX=if(draggedPage==page.id) dragOffset.x else 0f; translationY=if(draggedPage==page.id) dragOffset.y else 0f }.onGloballyPositioned { reorderBounds[page.id]=it.boundsInRoot() }.clickable { highlighted=""; if(selected.isNotEmpty()) toggle(page.id) else edit(page.id) }.then(Modifier.pageDragGesture(page.id,pages.map { it.id },reorderBounds,{ draggedPage=it },{ dragTarget=it },{ dragOffset=it },{ toggle(page.id) },{ ids -> model.run { model.repository.reorder(documentId,ids) } })).then(if(grid) Modifier else Modifier.border(1.dp,if(page.id in selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,MaterialTheme.shapes.medium).background(if(page.id in selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,MaterialTheme.shapes.medium).padding(8.dp))) {
                     val accent by androidx.compose.animation.animateColorAsState(if(page.id in selected || page.id==highlighted || page.id==dragTarget) MaterialTheme.colorScheme.primary.copy(alpha=.6f) else MaterialTheme.colorScheme.outlineVariant,animationSpec=tween(140),label="Search match")
-                    Box(Modifier.fillMaxWidth().aspectRatio(.78f).border(if(page.id in selected || dragTarget==page.id) 2.dp else 1.dp,accent,androidx.compose.foundation.shape.RoundedCornerShape(8.dp)).background(if(page.id in selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow).semantics { this.selected=page.id in selected }) {
+                    Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                    Box((if(grid) Modifier.fillMaxWidth().aspectRatio(.78f) else Modifier.size(88.dp,116.dp)).border(if(page.id in selected || dragTarget==page.id) 2.dp else 1.dp,accent,androidx.compose.foundation.shape.RoundedCornerShape(8.dp)).background(if(page.id in selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow).semantics { this.selected=page.id in selected }) {
                         PageThumbnail(page,model,"Preview ${if(page.pageName==null) "page ${page.position + 1}" else page.label()}",Modifier.fillMaxSize().padding(4.dp))
                         if(dragTarget==page.id) Surface(Modifier.align(Alignment.BottomStart).padding(6.dp),color=MaterialTheme.colorScheme.primaryContainer,shape=MaterialTheme.shapes.small) { Text(if(draggedPage==page.id) "Moving" else "Drop here",Modifier.padding(6.dp),style=MaterialTheme.typography.labelSmall) }
 
                         if(page.id in selected) Icon(Icons.Outlined.CheckCircle,"Selected",tint=MaterialTheme.colorScheme.primary,modifier=Modifier.align(Alignment.TopEnd).padding(8.dp).background(MaterialTheme.colorScheme.primaryContainer,androidx.compose.foundation.shape.CircleShape))
                         if(page.id==highlighted) Surface(Modifier.align(Alignment.BottomEnd).padding(6.dp),color=MaterialTheme.colorScheme.primaryContainer.copy(alpha=.95f),shape=MaterialTheme.shapes.small) { Text("Match",Modifier.padding(horizontal=8.dp,vertical=4.dp),style=MaterialTheme.typography.labelSmall) }
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(page.id in selected, { checked -> selected = if (checked) selected + page.id else selected - page.id }, modifier = Modifier.semantics { contentDescription = "Select ${if(page.pageName==null) "page ${page.position + 1}" else page.label()}" })
-                        Text(page.label(), modifier = Modifier.weight(1f), maxLines=2, overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
-                        IconButton(onClick = { pageAction = page }) { Icon(Icons.Outlined.MoreVert, "Actions for ${if(page.pageName==null) "page ${page.position + 1}" else page.label()}") }
+                    if(!grid) pageActions(Modifier.weight(1f))
                     }
+                    if(grid) pageActions()
                 } }
             }
         }

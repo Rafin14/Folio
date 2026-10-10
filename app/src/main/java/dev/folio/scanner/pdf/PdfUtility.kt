@@ -86,6 +86,26 @@ class PdfUtility @Inject constructor(@ApplicationContext val context:Context,val
         save(id,j.put("folioDocument",document).put("folioHash",stored.pdfHash).put("folioModifiedAt",stored.modifiedAt).put("dirty",false).put("initialImportSaved",true))
         document
     }}
+    private suspend fun <T> withFolioInput(documentId:String,action:suspend (Uri)->T):T=withContext(Dispatchers.IO) {
+        val dir=File(context.cacheDir,"shared-pdfs/utility-${UUID.randomUUID()}").apply { mkdirs() }
+        try {
+            val doc=requireNotNull(documents.dao.document(documentId)) { "Document no longer exists." }
+            require(!doc.deleting && doc.trashedAt==null && doc.pageCount>0) { "Choose a document with available pages." }
+            val input=File(dir,"input.pdf")
+            if(doc.importedPdf) documents.snapshotPdf(documentId,input,engine) else {
+                val layouts=mutableListOf<PageLayout>()
+                val images=documents.snapshotImages(documentId,File(dir,"images"),layouts=layouts)
+                val job=currentCoroutineContext()
+                engine.generate(images,input,doc.title,progress={ _,_ -> job.ensureActive() },layouts=layouts)
+            }
+            action(androidx.core.content.FileProvider.getUriForFile(context,"${context.packageName}.files",input,pdfFileStem(doc.title)+".pdf"))
+        } finally { withContext(NonCancellable) { dir.deleteRecursively() } }
+    }
+    suspend fun openFolioInput(kind:String,documentId:String):String {
+        require(kind in listOf("split","merge","raster"))
+        return withFolioInput(documentId) { open(kind,listOf(it)) }
+    }
+    suspend fun addFolioMergeInput(id:String,documentId:String)=withFolioInput(documentId) { addMergeInputs(id,listOf(it)) }
     suspend fun fromDocuments(ids:List<String>):String=fromPages(ids.flatMap { doc -> documents.dao.pages(doc).map { FolioPageChoice(doc,it.id) } })
     suspend fun openManaged(documentId:String):String=withContext(Dispatchers.IO) {
         val id=UUID.randomUUID().toString(); val input=File(folder(id),"input-0")

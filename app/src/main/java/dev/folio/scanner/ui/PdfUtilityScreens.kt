@@ -100,12 +100,21 @@ fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(S
     val destinationType=if(kind in listOf("split","raster")) "groups" else "pdf"
     val rememberedFolder by produceState<Uri?>(null,destinationType,folderRevision) { value=withContext(Dispatchers.IO) { utility.rememberedDestination(destinationType) } }
     val folderLabel by produceState("",rememberedFolder) { value=rememberedFolder?.let { withContext(Dispatchers.IO) { runCatching { utility.name(it) }.getOrDefault("Selected folder") } }.orEmpty() }
-    fun acceptInput() { val inputs=picked.map(Uri::parse); val secret=password; model.run {
-        if(addingMerge) utility.addMergeInputs(sessionId,inputs,secret) else sessionId=utility.open(kind,inputs,secret)
+    fun inputsReady() {
         val j=utility.session(sessionId); val names=j.getJSONArray("names")
         title=when(kind) { "merge" -> j.getJSONArray("order").let { order -> (0 until order.length()).joinToString(" ") { pdfFileStem(names.getString(order.getInt(it))) } }+" merged"; "edit" -> pdfFileStem(names.getString(0))+" edited"; else -> pdfFileStem(names.getString(0)) }
         if(!addingMerge) { ranges=""; quality=PdfQuality.ORIGINAL }
         if(kind=="edit") {gallery=true;selectedPdfPage=0}; addingMerge=false; passwordDialog=false; password=""; picked=emptyList(); revision++
+    }
+    fun acceptInput() { val inputs=picked.map(Uri::parse); val secret=password; model.run {
+        if(addingMerge) utility.addMergeInputs(sessionId,inputs,secret) else sessionId=utility.open(kind,inputs,secret)
+        inputsReady()
+    } }
+    fun acceptFolio(document:String) { model.run {
+        if(kind=="edit") sessionId=utility.openManaged(document)
+        else if(addingMerge) utility.addFolioMergeInput(sessionId,document)
+        else sessionId=utility.openFolioInput(kind,document)
+        inputsReady();chooseManaged=false;savedFolio=false
     } }
     val pdfInput=rememberLauncherForActivityResult(PdfInputPicker()) { uris -> if(uris.isNotEmpty()) { picked=uris.map { it.toString() }; passwordDialog=true } }
     val mergeInput=rememberLauncherForActivityResult(PdfInputPicker(true)) { uris -> if(uris.isNotEmpty()) { picked=uris.map { it.toString() }; passwordDialog=true } }
@@ -130,7 +139,7 @@ fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(S
             if(sessionId.isEmpty()) {
                 if(completed) item { Text("Export verified in device storage",color=MaterialTheme.colorScheme.primary,style=MaterialTheme.typography.titleSmall) }
                 items(listOf("Split PDF" to "split","Merge PDF" to "merge","Image to PDF" to "images","PDF to Image" to "raster","Edit PDF" to "edit","Generate PDF" to "generate","OCR PDF" to "ocr","Extract Images and Figures" to "figures","PDF to Word" to "word")) { (label,key) ->
-                    Surface(onClick={ kind=key; addingMerge=false; when(key) { "ocr","figures","word" -> {analysisTool=key;analysisSession=""}; "edit" -> chooseSource=true; "generate" -> chooseDocs=true; "images" -> imageInput.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)); "merge" -> mergeInput.launch(arrayOf("application/pdf")); else -> pdfInput.launch(arrayOf("application/pdf")) } },enabled=!busy,shape=MaterialTheme.shapes.medium,color=MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha=.94f),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)) {
+                    Surface(onClick={ kind=key; addingMerge=false; when(key) { "ocr","figures","word" -> {analysisTool=key;analysisSession=""}; "edit","split","merge","raster" -> chooseSource=true; "generate" -> chooseDocs=true; "images" -> imageInput.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)); else -> pdfInput.launch(arrayOf("application/pdf")) } },enabled=!busy,shape=MaterialTheme.shapes.medium,color=MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha=.94f),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)) {
                         Row(Modifier.fillMaxWidth().padding(18.dp),verticalAlignment=Alignment.CenterVertically) { Icon(when(key) { "edit" -> Icons.Outlined.Edit; "images" -> Icons.Outlined.PhotoLibrary; "raster" -> Icons.Outlined.Image; "generate" -> Icons.Outlined.Description; else -> Icons.Outlined.PictureAsPdf },null,tint=MaterialTheme.colorScheme.primary); Text(label,Modifier.weight(1f).padding(start=16.dp),style=MaterialTheme.typography.titleMedium); Icon(Icons.Outlined.ChevronRight,null) }
                     }
                 }
@@ -151,7 +160,7 @@ fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(S
                     if(kind=="merge" && session!=null) item {
                         val order=session!!.getJSONArray("order").let { a -> List(a.length()) { a.getInt(it) } }
                         Text("Drag to arrange merge order",style=MaterialTheme.typography.titleMedium)
-                        OutlinedButton(onClick={ addingMerge=true; pdfInput.launch(arrayOf("application/pdf")) },enabled=!busy) { Icon(Icons.Outlined.Add,null,Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text("Add PDF") }
+                        OutlinedButton(onClick={ addingMerge=true; chooseSource=true },enabled=!busy) { Icon(Icons.Outlined.Add,null,Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text("Add PDF") }
                         if(order.size<2) Text("Add another PDF to merge.",style=MaterialTheme.typography.bodySmall)
                         ReorderList(order.map { it.toString() },{ key -> pdfFileStem(session!!.getJSONArray("names").getString(key.toInt()))+" - "+session!!.getJSONArray("counts").getInt(key.toInt())+" pages" },trailing={ key ->
                             IconButton(onClick={ utility.removeMergeInput(sessionId,key.toInt()); val j=utility.session(sessionId); title=j.getJSONArray("order").let { list -> (0 until list.length()).joinToString(" ") { pdfFileStem(j.getJSONArray("names").getString(list.getInt(it))) } }+" merged"; revision++ },enabled=!busy) { Icon(Icons.Outlined.Close,"Remove PDF ${key.toInt()+1}") }
@@ -165,8 +174,11 @@ fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(S
         }
     }
     if(passwordDialog) AlertDialog(onDismissRequest={ passwordDialog=false; picked=emptyList(); password="" },title={ Text("Open selected PDF") },text={ Column { Text("The source stays untouched. Enter its owner password only if protected."); OutlinedTextField(password,{ password=it },label={ Text("Owner password, if needed") },visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation(),singleLine=true) } },confirmButton={ Button(onClick=::acceptInput,enabled=!busy) { Text("Open") } },dismissButton={ OutlinedButton(onClick={ passwordDialog=false; password=""; picked=emptyList() }) { Text("Cancel") } })
-    if(chooseSource) PdfSourceDialog("Edit PDF",{chooseSource=false;pdfInput.launch(arrayOf("application/pdf"))},{chooseSource=false;chooseManaged=true},{chooseSource=false})
-    if(chooseManaged) ManagedPdfChooser(model,{ chooseManaged=false }) { id -> model.run { sessionId=utility.openManaged(id); kind="edit"; gallery=true;selectedPdfPage=0; title=library.documents.first { it.id==id }.title; chooseManaged=false; savedFolio=false; revision++ } }
+    if(chooseSource) PdfSourceDialog(when(kind) {"split" -> "Split PDF";"merge" -> if(addingMerge) "Add PDF" else "Merge PDF";"raster" -> "PDF to Image";else -> "Edit PDF"},{chooseSource=false;if(kind=="merge" && !addingMerge) mergeInput.launch(arrayOf("application/pdf")) else pdfInput.launch(arrayOf("application/pdf"))},{chooseSource=false;chooseManaged=true},{chooseSource=false})
+    if(chooseManaged) {
+        if(kind=="edit") ManagedPdfChooser(model,{chooseManaged=false},::acceptFolio)
+        else FolioPageChooser(model,false,{chooseManaged=false},selectDocument=::acceptFolio) {}
+    }
     if(chooseDocs) FolioPageChooser(model,false,{ chooseDocs=false }) { selected -> model.run {
         sessionId=utility.fromPages(selected); kind="generate"; title=selected.map { it.documentId }.distinct().mapNotNull { id -> library.documents.find { it.id==id }?.title }.joinToString(" "); chooseDocs=false; revision++
     } }

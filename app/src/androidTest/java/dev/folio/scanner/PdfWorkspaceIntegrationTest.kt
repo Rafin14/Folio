@@ -41,6 +41,38 @@ class PdfWorkspaceIntegrationTest {
     private suspend fun open(kind:String,inputs:List<Uri>)=utility.open(kind,inputs).also { sessions+=it }
     private suspend fun direct(id:String,dest:Uri,title:String,selection:String="",isTree:Boolean=false) { utility.save(id,utility.session(id).put("destination",dest.toString()).put("tree",isTree).put("title",title).put("selection",selection).put("state","pending")); utility.execute(id) { _,_ -> } }
     private suspend fun cleanup() { sessions.forEach { runCatching { utility.discard(it) } }; resources.reversed().forEach { runCatching { DocumentsContract.deleteDocument(resolver,it) } } }
+    @Test fun folioPdfAndScanInputsReuseSplitRasterAndMixedMergeWithoutChangingDocuments()=runBlocking {
+        val src=source("Native ${UUID.randomUUID()}.pdf")
+        val file=File(context.cacheDir,"folio-source-${UUID.randomUUID()}.pdf").apply {writeBytes(bytes(src))}
+        val pdf=utility.documents.importPdf(file,"Native source ${UUID.randomUUID()}",utility.engine)
+        val scan=utility.documents.create("Scan source ${UUID.randomUUID()}")
+        try {
+            val bitmap=Bitmap.createBitmap(300,400,Bitmap.Config.ARGB_8888).apply {eraseColor(Color.WHITE)}
+            val data=java.io.ByteArrayOutputStream();try {bitmap.compress(Bitmap.CompressFormat.PNG,100,data)} finally {bitmap.recycle()}
+            val page=utility.documents.importImage(scan,java.io.ByteArrayInputStream(data.toByteArray()),detectDocument=false)
+            utility.documents.edit(page,layout=dev.folio.scanner.data.PageLayout("A5"),enqueueOcr=false)
+            val before=utility.documents.dao.allDocuments();val originals=utility.documents.dao.pages(pdf)+utility.documents.dao.pages(scan)
+            val split=utility.openFolioInput("split",pdf).also {sessions+=it}
+            assertEquals("split",utility.session(split).getString("kind"));assertEquals(4,utility.session(split).getJSONArray("counts").getInt(0))
+            direct(split,tree,"Folio split","2",true)
+            val splitFolder=Uri.parse(utility.session(split).getString("outputFolder"));resources+=splitFolder
+            val splitOutput=children(splitFolder).single().second
+            val result=File(context.cacheDir,"folio-split-proof.pdf").apply {writeBytes(bytes(splitOutput))}
+            try {utility.engine.read(result).use {assertEquals(1,it.numberOfPages);assertTrue(com.itextpdf.kernel.pdf.canvas.parser.PdfTextExtractor.getTextFromPage(it.getPage(1)).contains("PAGE 2"))}} finally {result.delete()}
+            val raster=utility.openFolioInput("raster",pdf).also {sessions+=it}
+            direct(raster,tree,"Folio raster","1",true)
+            val rasterFolder=Uri.parse(utility.session(raster).getString("outputFolder"));resources+=rasterFolder
+            assertEquals(1,children(rasterFolder).size)
+            resolver.openInputStream(children(rasterFolder).single().second)!!.use {assertNotNull(android.graphics.BitmapFactory.decodeStream(it)?.also {b ->b.recycle()})}
+            val merge=utility.openFolioInput("merge",pdf).also {sessions+=it};utility.addFolioMergeInput(merge,scan)
+            val output=create("Folio mixed merge ${UUID.randomUUID()}.pdf");direct(merge,output,"Mixed Folio documents")
+            result.writeBytes(bytes(output))
+            try {utility.engine.read(result).use {p ->assertEquals(5,p.numberOfPages);assertTrue(com.itextpdf.kernel.pdf.canvas.parser.PdfTextExtractor.getTextFromPage(p.getPage(1)).contains("PAGE 1"));assertEquals(148.0*72/25.4,p.getPage(5).pageSize.width.toDouble(),1.0)}} finally {result.delete()}
+            val scanSplit=utility.openFolioInput("split",scan).also {sessions+=it};assertEquals(1,utility.session(scanSplit).getJSONArray("counts").getInt(0))
+            assertEquals(before,utility.documents.dao.allDocuments());assertEquals(originals,utility.documents.dao.pages(pdf)+utility.documents.dao.pages(scan));assertArrayEquals(bytes(src),file.readBytes())
+            assertTrue(File(context.cacheDir,"shared-pdfs").listFiles().orEmpty().none {it.name.startsWith("utility-")})
+        } finally {cleanup();utility.documents.purgeForTest(pdf);utility.documents.purgeForTest(scan);file.delete()}
+    }
     @Test fun concurrentSessionReadsCannotRollBackAtomicPageWrites()=runBlocking {
         val id=open("edit",listOf(source("Atomic session ${UUID.randomUUID()}.pdf")))
         val stop=java.util.concurrent.atomic.AtomicBoolean(false)

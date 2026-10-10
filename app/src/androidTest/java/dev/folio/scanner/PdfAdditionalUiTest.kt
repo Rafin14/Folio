@@ -77,7 +77,7 @@ class PdfAdditionalUiTest {
         compose.onNodeWithText("PDF workspace").performClick()
         listOf("Split PDF","Merge PDF","PDF to Image","Edit PDF").forEach { tool ->
             compose.onNodeWithText(tool,substring=false).performScrollTo().performClick()
-            if(tool=="Edit PDF") {
+            run {
                 waitText("Select from Storage")
                 compose.onNodeWithText("Select from Storage").performClick()
             }
@@ -98,6 +98,7 @@ class PdfAdditionalUiTest {
         assertTrue(utility.rememberDestination("pdf",tree)); var session=""; var output:Uri?=null
         fun pdf(name:String,count:Int):Uri { val uri=DocumentsContract.createDocument(resolver,folder,"application/pdf",name)!!; resolver.openOutputStream(uri,"w")!!.use { out -> com.itextpdf.kernel.pdf.PdfDocument(com.itextpdf.kernel.pdf.PdfWriter(out)).use { p -> repeat(count) { p.addNewPage() } } }; return uri }
         fun choose(name:String) {
+            waitText("Select from Storage");compose.onNodeWithText("Select from Storage").performClick()
             assertTrue(device.wait(Until.hasObject(By.pkg("com.google.android.documentsui")),15000)); device.waitForIdle()
             device.findObject(By.desc("Show roots"))?.click(); device.waitForIdle(); device.wait(Until.hasObject(By.text("Folio test files")),10000); device.findObject(By.text("Folio test files")).click(); device.waitForIdle()
             device.wait(Until.hasObject(By.text(label)),10000); device.findObject(By.text(label)).click(); device.waitForIdle(); device.wait(Until.hasObject(By.text(name)),10000); device.findObject(By.text(name)).click()
