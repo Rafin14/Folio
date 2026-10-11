@@ -26,6 +26,8 @@ Recorded before the latest UI refinements; some screens differ from the current 
 <td align="center"><img src="docs/images/ocr-search.png" width="240" alt="OCR phrase search and match navigation"><br><b>Search extracted text</b></td>
 <td align="center"><img src="docs/images/document.png" width="240" alt="Document pages and selection controls"><br><b>Page management</b></td>
 <td align="center"><img src="docs/images/amoled.png" width="240" alt="PDF Workspace in AMOLED mode"><br><b>AMOLED theme</b></td>
+</tr>
+<tr>
 <td align="center">
     <img src="docs/images/pdf-selection.png" width="240" alt="PDF page selection"><br>
     <b>PDF page selection</b>
@@ -37,7 +39,6 @@ Recorded before the latest UI refinements; some screens differ from the current 
 </tr>
 </table>
 
-[PDF page selection](docs/images/pdf-selection.png) · [OCR PDF search](docs/images/pdf-ocr-search.png)
 
 ## What you can do
 
