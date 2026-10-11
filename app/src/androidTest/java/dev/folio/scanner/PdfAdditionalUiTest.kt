@@ -27,12 +27,17 @@ class PdfAdditionalUiTest {
     }
     private fun waitEnabled(text:String)=compose.waitUntil(30000) { compose.onAllNodes(hasText(text,substring=false) and isEnabled()).fetchSemanticsNodes(atLeastOneRootRequired=false).isNotEmpty() }
     private fun waitText(text:String)=compose.waitUntil(20000) { compose.onAllNodesWithText(text).fetchSemanticsNodes(atLeastOneRootRequired=false).isNotEmpty() }
+    private fun savedPdf(name:String,colors:List<Int>):String=runBlocking {
+        val files=colors.map {color ->File.createTempFile("chooser-",".png",inst.targetContext.cacheDir).also {file ->val bitmap=Bitmap.createBitmap(300,400,Bitmap.Config.ARGB_8888).apply {eraseColor(color)};try {file.outputStream().use {bitmap.compress(Bitmap.CompressFormat.PNG,100,it)}} finally {bitmap.recycle()}}}
+        val pdf=File.createTempFile("chooser-",".pdf",inst.targetContext.cacheDir)
+        try {utility.engine.generate(files,pdf,name);repo.importPdf(pdf,name,utility.engine)} finally {files.forEach {it.delete()};pdf.delete()}
+    }
     @Test fun chooserMixesWholeDocumentsAndOrderedPagesRenumbersAndRestores() {
-        val a=runBlocking { repo.create("Chooser A ${System.nanoTime()}") }; val b=runBlocking { repo.create("Chooser B ${System.nanoTime()}") }
+        val a=savedPdf("Chooser A ${System.nanoTime()}",listOf(Color.RED,Color.GREEN,Color.BLUE));val b=savedPdf("Chooser B ${System.nanoTime()}",listOf(Color.YELLOW,Color.CYAN))
         val titleA=runBlocking { repo.dao.document(a)!!.title }; val titleB=runBlocking { repo.dao.document(b)!!.title }
         var session=""
         try {
-            val ids=listOf(page(a,Color.RED),page(a,Color.GREEN),page(a,Color.BLUE)); val bIds=listOf(page(b,Color.YELLOW),page(b,Color.CYAN))
+            val ids=runBlocking {repo.dao.pages(a).map {it.id}};val bIds=runBlocking {repo.dao.pages(b).map {it.id}}
             val before=runBlocking { repo.dao.allDocuments() }; val pending=utility.pending().toSet()
             compose.onNodeWithText("PDF workspace").performClick()
             compose.onNode(hasScrollAction()).performScrollToNode(hasText("Generate PDF",substring=false))

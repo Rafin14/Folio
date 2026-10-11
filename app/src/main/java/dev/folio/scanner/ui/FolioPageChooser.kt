@@ -32,7 +32,7 @@ internal fun FolioPageChooser(model:LibraryViewModel,single:Boolean,dismiss:()->
     val library by model.state.collectAsStateWithLifecycle()
     val busy by model.busy.collectAsStateWithLifecycle()
     val allPages by produceState<List<Page>?>(null,library.documents) {
-        value=if(choosingDocument) emptyList() else withContext(Dispatchers.IO) { model.repository.dao.allPages().filter { it.trashedAt==null && library.documents.any { d -> d.id==it.documentId } } }
+        value=if(choosingDocument) emptyList() else withContext(Dispatchers.IO) { model.repository.dao.allPages().filter { it.trashedAt==null && library.documents.any { d -> d.id==it.documentId && (!pdfOnly || d.importedPdf) } } }
     }
     val pages=allPages.orEmpty()
     var selectedDocument by rememberSaveable { mutableStateOf("") }

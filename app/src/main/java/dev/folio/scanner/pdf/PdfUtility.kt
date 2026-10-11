@@ -3,6 +3,7 @@ package dev.folio.scanner.pdf
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
@@ -86,11 +87,12 @@ class PdfUtility @Inject constructor(@ApplicationContext val context:Context,val
         save(id,j.put("folioDocument",document).put("folioHash",stored.pdfHash).put("folioModifiedAt",stored.modifiedAt).put("dirty",false).put("initialImportSaved",true))
         document
     }}
-    private suspend fun <T> withFolioInput(documentId:String,action:suspend (Uri)->T):T=withContext(Dispatchers.IO) {
+    private suspend fun <T> withFolioInput(documentId:String,pdfOnly:Boolean=false,action:suspend (Uri)->T):T=withContext(Dispatchers.IO) {
         val dir=File(context.cacheDir,"shared-pdfs/utility-${UUID.randomUUID()}").apply { mkdirs() }
         try {
             val doc=requireNotNull(documents.dao.document(documentId)) { "Document no longer exists." }
             require(!doc.deleting && doc.trashedAt==null && doc.pageCount>0) { "Choose a document with available pages." }
+            require(!pdfOnly || doc.importedPdf) { "Choose a saved Folio PDF." }
             val input=File(dir,"input.pdf")
             if(doc.importedPdf) documents.snapshotPdf(documentId,input,engine) else {
                 val layouts=mutableListOf<PageLayout>()
@@ -103,9 +105,9 @@ class PdfUtility @Inject constructor(@ApplicationContext val context:Context,val
     }
     suspend fun openFolioInput(kind:String,documentId:String):String {
         require(kind in listOf("split","merge","raster"))
-        return withFolioInput(documentId) { open(kind,listOf(it)) }
+        return withFolioInput(documentId,pdfOnly=true) { open(kind,listOf(it)) }
     }
-    suspend fun addFolioMergeInput(id:String,documentId:String)=withFolioInput(documentId) { addMergeInputs(id,listOf(it)) }
+    suspend fun addFolioMergeInput(id:String,documentId:String)=withFolioInput(documentId,pdfOnly=true) { addMergeInputs(id,listOf(it)) }
     suspend fun fromDocuments(ids:List<String>):String=fromPages(ids.flatMap { doc -> documents.dao.pages(doc).map { FolioPageChoice(doc,it.id) } })
     suspend fun openManaged(documentId:String):String=withContext(Dispatchers.IO) {
         val id=UUID.randomUUID().toString(); val input=File(folder(id),"input-0")
@@ -137,9 +139,10 @@ class PdfUtility @Inject constructor(@ApplicationContext val context:Context,val
             save(id,j); document
         } finally { output.delete() }
     } }
-    suspend fun fromPages(selection:List<FolioPageChoice>):String=withContext(Dispatchers.IO) {
+    suspend fun fromPages(selection:List<FolioPageChoice>,pdfOnly:Boolean=false):String=withContext(Dispatchers.IO) {
         require(selection.size in 1..500 && selection.map { it.pageId }.distinct().size==selection.size) { "Select 1 to 500 different pages." }
         val ids=selection.map { it.documentId }.distinct(); require(ids.size<=50)
+        require(!pdfOnly || ids.all { documents.dao.document(it)?.let {doc -> doc.importedPdf && !doc.deleting && doc.trashedAt==null}==true }) { "Choose pages from saved Folio PDFs." }
         val id=UUID.randomUUID().toString(); val layouts=mutableListOf<PageLayout>()
         try {
             val names=ids.map { requireNotNull(documents.dao.document(it)).title }
@@ -197,6 +200,14 @@ class PdfUtility @Inject constructor(@ApplicationContext val context:Context,val
         requireNotNull(DocumentsContract.createDocument(context.contentResolver,DocumentsContract.buildDocumentUriUsingTree(folder,DocumentsContract.getTreeDocumentId(folder)),"application/pdf",pdfFileStem(title)+".pdf")) { "Choose another writable folder." }
     }
     fun pages(id:String)=session(id).getJSONArray("pages").let { a -> List(a.length()) { UtilityPage.from(a.getJSONObject(it)) } }
+    suspend fun snapshotEdited(id:String,selectedIds:Set<String>?=null):File=withSessionResources(id) {withContext(Dispatchers.IO) {
+        requireActiveSession(id)
+        val selected=selectedUtilityPages(pages(id),selectedIds)
+        val directory=File(context.cacheDir,"shared-pdfs").apply {mkdirs()}
+        val output=File.createTempFile("gallery-",".pdf",directory)
+        try {val job=currentCoroutineContext();engine.editUtility(File(folder(id,create=false),"input-0"),selected,output,"Folio PDF") {_,_->job.ensureActive()};check(engine.count(output)==selected.size) {"PDF page verification failed."};output}
+        catch(t:Throwable) {output.delete();throw t}
+    }}
     /** Shared SAF publication: stream output and verify through the selected provider. */
     fun publishOutput(file:File,uri:Uri,cancelled:()->Unit={}) {
         cancelled()
@@ -210,6 +221,15 @@ class PdfUtility @Inject constructor(@ApplicationContext val context:Context,val
     }
     @Synchronized fun updatePages(id:String,pages:List<UtilityPage>) { require(pages.isNotEmpty()); save(id,session(id).put("pages",JSONArray(pages.map { it.json() })).put("dirty",true)) }
     suspend fun preview(id:String,page:UtilityPage,edge:Int=1400,includeAnnotations:Boolean=false):Bitmap=withSessionResources(id) { requireActiveSession(id);renderPreview(id,page,edge,includeAnnotations) }
+    suspend fun galleryPreview(id:String,page:UtilityPage):Bitmap=withSessionResources(id) {withContext(Dispatchers.IO) {
+        requireActiveSession(id)
+        val digest=java.security.MessageDigest.getInstance("SHA-256").digest(page.json().toString().toByteArray()).joinToString("") {"%02x".format(it)}
+        val cached=File(folder(id,create=false),"thumb-$digest.png")
+        if(cached.isFile) BitmapFactory.decodeFile(cached.path)?.let {return@withContext it}
+        val bitmap=renderPreview(id,page,480,true)
+        try {val output=AtomicFile(cached);val stream=output.startWrite();try {check(bitmap.compress(Bitmap.CompressFormat.PNG,100,stream));output.finishWrite(stream)} catch(t:Throwable) {output.failWrite(stream);throw t};bitmap}
+        catch(t:Throwable) {bitmap.recycle();throw t}
+    }}
     private suspend fun renderPreview(id:String,page:UtilityPage,edge:Int,includeAnnotations:Boolean):Bitmap=withContext(Dispatchers.IO) {
         val dir=folder(id,create=false); val file=File.createTempFile("view-",".pdf",dir)
         try { engine.editUtility(File(dir,"input-0"),listOf(if(includeAnnotations) page else page.copy(ink=emptyList(),notes=emptyList())),file,"Preview"); engine.render(file,1,dir,edge=edge) } finally { file.delete() }

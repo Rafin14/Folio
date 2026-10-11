@@ -87,7 +87,60 @@ class GallerySourceUiTest {
             assertArrayEquals(original,source.readBytes());capture("pdf-list-reordered")
         } finally {runBlocking {utility.discard(id)};source.delete()}
     }
-    @Test fun splitMergeAndEditOfferOnlyFolioPdfsWhileRasterKeepsDocuments() {
+    @Test fun gallerySelectionSharesAndPrintsExactPagesAndEditorBackRetainsEdits() {
+        val file=File(context.cacheDir,"shared-images/gallery-actions-${UUID.randomUUID()}.pdf").apply {parentFile!!.mkdirs()}
+        PdfDocument(PdfWriter(file)).use {pdf ->val font=com.itextpdf.kernel.font.PdfFontFactory.createFont(com.itextpdf.io.font.constants.StandardFonts.HELVETICA);repeat(3) {index ->val page=pdf.addNewPage();com.itextpdf.kernel.pdf.canvas.PdfCanvas(page).beginText().setFontAndSize(font,24f).moveText(45.0,740.0).showText("Sample report - Page ${index+1}").setFontAndSize(font,14f).moveText(0.0,-50.0).showText("Keep the pages you need.").moveText(0.0,-30.0).showText("Share, export or print your selection.").endText()}}
+        val original=file.readBytes();val uri=androidx.core.content.FileProvider.getUriForFile(context,"${context.packageName}.files",file)
+        val id=runBlocking {utility.open("edit",listOf(uri))};val device=UiDevice.getInstance(inst)
+        utility.save(id,utility.session(id).put("names",org.json.JSONArray(listOf("Sample report.pdf"))))
+        fun snapshots()=File(context.cacheDir,"shared-pdfs").listFiles().orEmpty().filter {it.name.startsWith("gallery-")}.toSet()
+        fun output(label:String,count:Int) {
+            compose.waitUntil(20000) {compose.onAllNodes(hasText(label,substring=false) and isEnabled()).fetchSemanticsNodes().isNotEmpty()}
+            val before=snapshots();compose.onNodeWithText(label,substring=false).performClick()
+            val launched=device.wait(Until.hasObject(By.pkg(java.util.regex.Pattern.compile(if(label=="Print") "com.android.printspooler" else "android|.*intentresolver.*"))),20000)
+            if(!launched) capture("$label-failed")
+            assertTrue("$label opens its Android system interface",launched)
+            val added=snapshots()-before
+            assertEquals(1,added.size);utility.engine.read(added.single()).use {assertEquals(count,it.numberOfPages)}
+            capture("gallery-${label.lowercase()}-$count");device.pressBack();device.waitForIdle();waitDescription("PDF page gallery")
+        }
+        fun exportPages(count:Int) {
+            compose.waitUntil(20000) {compose.onAllNodes(hasText("Export",substring=false) and isEnabled()).fetchSemanticsNodes().isNotEmpty()}
+            compose.onNodeWithText("Export",substring=false).performClick()
+            assertTrue(device.wait(Until.hasObject(By.pkg("com.google.android.documentsui")),15000))
+            device.waitForIdle()
+            device.wait(Until.findObject(By.desc("Show roots")),5000)?.click()
+            device.waitForIdle()
+            assertTrue(device.findObject(UiSelector().text("Downloads")).waitForExists(10000));device.findObject(UiSelector().text("Downloads")).click();device.waitForIdle()
+            val name="gallery-export-${UUID.randomUUID()}.pdf"
+            device.wait(Until.findObject(By.clazz("android.widget.EditText")),10000)!!.text=name
+            device.wait(Until.findObject(By.text(java.util.regex.Pattern.compile("(?i)save"))),10000)!!.click()
+            waitText("PDF export verified")
+            val proof=File(context.cacheDir,name)
+            try {proof.writeBytes(android.util.Base64.decode(device.executeShellCommand("base64 /sdcard/Download/$name"),android.util.Base64.DEFAULT));utility.engine.read(proof).use {assertEquals(count,it.numberOfPages)}} finally {proof.delete();device.executeShellCommand("rm /sdcard/Download/$name")}
+        }
+        try {
+            compose.activityRule.scenario.onActivity {activity ->val model=ViewModelProvider(activity)[LibraryViewModel::class.java];activity.setContent {FolioTheme("AMOLED") {PdfWorkspace(null,model,{}, {},initialSession=id)}}}
+            waitDescription("PDF page gallery");listMode()
+            exportPages(3)
+            output("Print",3)
+            compose.onNodeWithContentDescription("Open PDF page 1").performClick();waitDescription("PDF page 1 canvas")
+            compose.onNodeWithText("Rotate",substring=false).performClick();compose.onNodeWithContentDescription("Close PDF editor").performClick()
+            waitDescription("PDF page gallery");compose.onNodeWithText("Leave with unsaved changes?").assertDoesNotExist()
+            assertEquals(90,utility.pages(id)[0].rotation)
+            compose.onNodeWithContentDescription("Select PDF page 3").performClick();compose.onNodeWithContentDescription("Select PDF page 1").performClick()
+            waitText("2 selected");compose.onNodeWithContentDescription("Open PDF page 1").assertIsSelected();capture("gallery-selection")
+            exportPages(2)
+            output("Share",2);output("Print",2)
+            compose.onNodeWithContentDescription("Clear PDF selection").performClick()
+            compose.onNodeWithContentDescription("PDF gallery menu").performClick();compose.onNodeWithText("Select all pages",substring=false).performClick();waitText("3 selected")
+            compose.onNodeWithContentDescription("Clear PDF selection").performClick()
+            compose.onNodeWithContentDescription("Back",substring=false).performClick();waitText("Leave with unsaved changes?")
+            compose.onNodeWithText("Continue Editing",substring=false).performClick();waitDescription("PDF page gallery")
+            assertEquals(90,utility.pages(id)[0].rotation);assertArrayEquals(original,file.readBytes())
+        } finally {runBlocking {utility.discard(id)};file.delete()}
+    }
+    @Test fun splitMergeEditAndRasterOfferOnlyFolioPdfs() {
         val source=File(context.cacheDir,"tools-${UUID.randomUUID()}.pdf")
         PdfDocument(PdfWriter(source)).use {p ->repeat(2) {p.addNewPage()}}
         val pdf=runBlocking {repo.importPdf(source,"Source PDF",utility.engine)};val scan=runBlocking {repo.create("Source scan")}
@@ -102,11 +155,10 @@ class GallerySourceUiTest {
                 repeat(4) {if(device.hasObject(By.pkg("com.google.android.documentsui"))) {device.pressBack();device.waitForIdle()}}
                 waitText("Split PDF")
                 compose.onNodeWithText(label,substring=false).performScrollTo().performClick();compose.onNodeWithText("Folio Documents").performClick();waitDescription("Open Folio document Source PDF")
-                if(kind=="raster") compose.onNodeWithContentDescription("Open Folio document Source scan").assertIsDisplayed()
-                else {compose.onNodeWithText("Folio PDFs").assertIsDisplayed();compose.onNodeWithContentDescription("Open Folio document Source scan").assertDoesNotExist()}
+                compose.onNodeWithText("Folio PDFs").assertIsDisplayed();compose.onNodeWithContentDescription("Open Folio document Source scan").assertDoesNotExist()
                 capture("$kind-folio-picker")
                 compose.onNodeWithContentDescription("Open Folio document Source PDF").performClick();val pending=utility.pending().toSet()
-                compose.onNodeWithText(if(kind=="raster") "Use document" else "Open PDF").performClick()
+                compose.onNodeWithText("Open PDF").performClick()
                 compose.waitUntil(30000) {utility.pending().any {it !in pending}}
                 val id=utility.pending().single {it !in pending};sessions+=id
                 assertEquals(kind,utility.session(id).getString("kind"));assertEquals(2,utility.session(id).getJSONArray("counts").getInt(0))
@@ -122,6 +174,12 @@ class GallerySourceUiTest {
             }
             compose.onNodeWithText("Edit PDF",substring=false).performScrollTo().performClick();compose.onNodeWithText("Folio Documents").performClick();waitDescription("Open Folio document Source PDF")
             compose.onNodeWithText("Folio PDFs").assertIsDisplayed();compose.onNodeWithContentDescription("Open Folio document Source scan").assertDoesNotExist();capture("edit-folio-picker")
+            compose.onNodeWithContentDescription("Close Folio selection").performClick()
+            compose.onNodeWithText("Generate PDF",substring=false).performScrollTo().performClick()
+            waitDescription("Open Folio document Source PDF")
+            compose.onNodeWithContentDescription("Open Folio document Source scan").assertDoesNotExist()
+            compose.onNodeWithContentDescription("Select whole document Source PDF").performClick()
+            compose.onNodeWithText("2 pages selected").assertIsDisplayed();capture("generate-pdf-only")
             compose.onNodeWithContentDescription("Close Folio selection").performClick()
             assertEquals(2,runBlocking {repo.dao.pages(pdf).size});assertEquals(1,runBlocking {repo.dao.pages(scan).size})
         } finally {runBlocking {sessions.forEach {utility.discard(it)};repo.purgeForTest(pdf);repo.purgeForTest(scan)};source.delete()}

@@ -54,6 +54,7 @@ fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(S
     var quality by rememberSaveable { mutableStateOf(PdfQuality.ORIGINAL) }
     var revision by remember { mutableIntStateOf(0) }
     var choosingExport by rememberSaveable { mutableStateOf(false) }
+    var leaveAfterSave by rememberSaveable {mutableStateOf(false)}
     var unsaved by remember { mutableStateOf(false) }
     var cancelImport by remember {mutableStateOf(false)}
     var operationMenu by remember {mutableStateOf(false)}
@@ -74,9 +75,12 @@ fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(S
     val sessionJobs=jobs.filter { "utility-$sessionId" in it.tags }
     val active=if(session?.has("workId")==true) sessionJobs.firstOrNull { it.id.toString()==session.getString("workId") } else sessionJobs.firstOrNull { !it.state.isFinished } ?: sessionJobs.firstOrNull()
     val working=active?.state?.isFinished==false || (session?.optString("state")=="pending" && active==null)
-    LaunchedEffect(active?.state,session?.optString("state")) { if(session?.optString("state")=="complete" || active?.state==WorkInfo.State.SUCCEEDED) { sessionId=""; choosingExport=false; completed=true; revision++ } else if(active?.state in listOf(WorkInfo.State.FAILED,WorkInfo.State.CANCELLED)) choosingExport=true }
+    LaunchedEffect(active?.state,session?.optString("state")) { if(session?.optString("state")=="complete" || active?.state==WorkInfo.State.SUCCEEDED) { sessionId=""; choosingExport=false; completed=true; revision++;if(leaveAfterSave) {leaveAfterSave=false;if(initialSession.isNotEmpty()) back()} } else if(active?.state in listOf(WorkInfo.State.FAILED,WorkInfo.State.CANCELLED)) choosingExport=true }
+    suspend fun finishFolioSave(id:String) {savedFolio=true;revision++;if(leaveAfterSave) {utility.discard(id);sessionId="";choosingExport=false;leaveAfterSave=false;if(initialSession.isNotEmpty()) back()}}
     fun close() {
         if(busy) return
+        if(kind=="edit" && choosingExport && leaveAfterSave) {choosingExport=false;leaveAfterSave=false;gallery=true;return}
+        if(sessionId.isNotEmpty() && kind=="edit" && !gallery && !choosingExport) {gallery=true;return}
         if(sessionId.isEmpty()) { back(); return }
         if(working) { unsaved=true; return }
         if(importIntoFolio && session?.has("initialImportDocument")==true) {
@@ -153,8 +157,8 @@ fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(S
                     item { OutlinedTextField(title,{ title=it },label={ Text(if(kind in listOf("split","raster")) "Output folder uses original PDF name" else "Output filename") },enabled=kind !in listOf("split","raster"),singleLine=true,modifier=Modifier.fillMaxWidth()) }
                     if(kind=="edit" && (importIntoFolio || session!!.has("folioDocument"))) item {
                         if(savedFolio) Text("PDF saved in Folio",color=MaterialTheme.colorScheme.primary)
-                        if(session!!.has("folioDocument")) OutlinedButton(onClick={ model.run { utility.saveToFolio(sessionId,title,true); savedFolio=true; revision++ } },enabled=!busy,modifier=Modifier.fillMaxWidth()) { Text("Overwrite Existing PDF in Folio") }
-                        OutlinedButton(onClick={ model.run { if(importIntoFolio && session!!.has("initialImportDocument")) utility.persistInitialImport(sessionId) else utility.saveToFolio(sessionId,title); savedFolio=true; revision++ } },enabled=!busy,modifier=Modifier.fillMaxWidth()) { Text(if(importIntoFolio && !session!!.has("folioDocument")) "Import PDF into Folio" else "Save as New PDF in Folio") }
+                        if(session!!.has("folioDocument")) OutlinedButton(onClick={ model.run { val id=sessionId;utility.saveToFolio(id,title,true);finishFolioSave(id) } },enabled=!busy,modifier=Modifier.fillMaxWidth()) { Text("Overwrite Existing PDF in Folio") }
+                        OutlinedButton(onClick={ model.run { val id=sessionId;if(importIntoFolio && session!!.has("initialImportDocument")) utility.persistInitialImport(id) else utility.saveToFolio(id,title);finishFolioSave(id) } },enabled=!busy,modifier=Modifier.fillMaxWidth()) { Text(if(importIntoFolio && !session!!.has("folioDocument")) "Import PDF into Folio" else "Save as New PDF in Folio") }
                     }
                     if(kind in listOf("split","raster")) item { OutlinedTextField(ranges,{ ranges=it },label={ Text("Pages or ranges") },placeholder={ Text("All pages, or 1,3-5") },modifier=Modifier.fillMaxWidth()); Text(if(kind=="split") "Each comma-separated range becomes a PDF. Blank splits every page. Files are grouped in a folder named after the source." else "PNG images at up to 3000 px, grouped in a folder named after the source.",style=MaterialTheme.typography.bodySmall) }
                     if(kind=="merge" && session!=null) item {
@@ -168,7 +172,7 @@ fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(S
                     }
                     item { if(rememberedFolder!=null) { Text("Destination: $folderLabel",style=MaterialTheme.typography.bodyMedium); OutlinedButton(onClick={ changingFolder=true; folderDestination.launch(rememberedFolder) },enabled=!busy) { Text("Change destination folder") } } }
                     if(kind !in listOf("raster","edit")) item { Text("PDF quality",style=MaterialTheme.typography.labelLarge); Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(8.dp)) { PdfQuality.entries.forEach { q -> FilterChip(quality==q,{ quality=q; utility.save(sessionId,utility.session(sessionId).put("quality",q.name)); revision++ },label={ Text(q.name.lowercase().replaceFirstChar(Char::uppercase)) }) } } }
-                    item { Button(onClick={ if(kind in listOf("split","raster")) { val count=session!!.getJSONArray("counts").getInt(0); try { if(kind=="split") splitGroups(ranges,count) else pageSelection(ranges,count); chooseDestination() } catch(t:Exception) { model.error.value=t.message } } else chooseDestination() },enabled=title.isNotBlank() && !busy && (kind!="merge" || session!!.getJSONArray("order").length()>=2),modifier=Modifier.fillMaxWidth()) { Text(if(kind=="edit" && session!!.has("folioDocument")) "Save to Storage" else if(rememberedFolder==null) "Choose destination and export" else if(kind=="raster") "Export images" else if(kind=="split") "Export PDFs" else "Export PDF") }; if(kind=="edit") OutlinedButton(onClick={ choosingExport=false },modifier=Modifier.fillMaxWidth()) { Text("Return to PDF editor") }; OutlinedButton(colors=ButtonDefaults.outlinedButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick={ unsaved=true },enabled=!busy,modifier=Modifier.fillMaxWidth()) { Text("Discard operation") } }
+                    item { Button(onClick={ if(kind in listOf("split","raster")) { val count=session!!.getJSONArray("counts").getInt(0); try { if(kind=="split") splitGroups(ranges,count) else pageSelection(ranges,count); chooseDestination() } catch(t:Exception) { model.error.value=t.message } } else chooseDestination() },enabled=title.isNotBlank() && !busy && (kind!="merge" || session!!.getJSONArray("order").length()>=2),modifier=Modifier.fillMaxWidth()) { Text(if(kind=="edit" && session!!.has("folioDocument")) "Save to Storage" else if(rememberedFolder==null) "Choose destination and export" else if(kind=="raster") "Export images" else if(kind=="split") "Export PDFs" else "Export PDF") }; if(kind=="edit") OutlinedButton(onClick={ choosingExport=false;leaveAfterSave=false },modifier=Modifier.fillMaxWidth()) { Text(if(gallery) "Return to PDF gallery" else "Return to PDF editor") }; OutlinedButton(colors=ButtonDefaults.outlinedButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick={ unsaved=true },enabled=!busy,modifier=Modifier.fillMaxWidth()) { Text("Discard operation") } }
                 }
             }
         }
@@ -176,11 +180,11 @@ fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(S
     if(passwordDialog) AlertDialog(onDismissRequest={ passwordDialog=false; picked=emptyList(); password="" },title={ Text("Open selected PDF") },text={ Column { Text("The source stays untouched. Enter its owner password only if protected."); OutlinedTextField(password,{ password=it },label={ Text("Owner password, if needed") },visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation(),singleLine=true) } },confirmButton={ Button(onClick=::acceptInput,enabled=!busy) { Text("Open") } },dismissButton={ OutlinedButton(onClick={ passwordDialog=false; password=""; picked=emptyList() }) { Text("Cancel") } })
     if(chooseSource) PdfSourceDialog(when(kind) {"split" -> "Split PDF";"merge" -> if(addingMerge) "Add PDF" else "Merge PDF";"raster" -> "PDF to Image";else -> "Edit PDF"},{chooseSource=false;if(kind=="merge" && !addingMerge) mergeInput.launch(arrayOf("application/pdf")) else pdfInput.launch(arrayOf("application/pdf"))},{chooseSource=false;chooseManaged=true},{chooseSource=false})
     if(chooseManaged) {
-        if(kind in listOf("split","merge","edit")) ManagedPdfChooser(model,{chooseManaged=false},::acceptFolio)
+        if(kind in listOf("split","merge","edit","raster")) ManagedPdfChooser(model,{chooseManaged=false},::acceptFolio)
         else FolioPageChooser(model,false,{chooseManaged=false},selectDocument=::acceptFolio) {}
     }
-    if(chooseDocs) FolioPageChooser(model,false,{ chooseDocs=false }) { selected -> model.run {
-        sessionId=utility.fromPages(selected); kind="generate"; title=selected.map { it.documentId }.distinct().mapNotNull { id -> library.documents.find { it.id==id }?.title }.joinToString(" "); chooseDocs=false; revision++
+    if(chooseDocs) FolioPageChooser(model,false,{ chooseDocs=false },pdfOnly=true) { selected -> model.run {
+        sessionId=utility.fromPages(selected,pdfOnly=true); kind="generate"; title=selected.map { it.documentId }.distinct().mapNotNull { id -> library.documents.find { it.id==id }?.title }.joinToString(" "); chooseDocs=false; revision++
     } }
     if(cancelImport) AlertDialog(onDismissRequest={cancelImport=false},title={Text("Cancel Import?")},text={Text("This PDF has not been saved to Folio. Do you want to cancel the import? Your original file will remain unchanged.")},confirmButton={OutlinedButton(colors=ButtonDefaults.outlinedButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick=discard@{if(leaving) return@discard;val id=sessionId;leaving=true;model.run {try {utility.cancelAndDiscard(id);sessionId="";cancelImport=false;back()} finally {leaving=false}}}) {Text("Discard Import")}},dismissButton={TextButton(onClick={cancelImport=false}) {Text("Keep Importing")}})
     if(unsaved) AlertDialog(
@@ -189,7 +193,7 @@ fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(S
         text={ Text("Export a new file to keep your work, or discard this temporary session. The source and Folio documents remain unchanged.") },
         confirmButton={
             Column(Modifier.padding(bottom=8.dp),verticalArrangement=Arrangement.spacedBy(8.dp),horizontalAlignment=Alignment.End) {
-                Button(onClick={ unsaved=false; choosingExport=true },enabled=!working && !busy) { Text("Save and Export") }
+                Button(onClick={ unsaved=false; choosingExport=true;leaveAfterSave=true },enabled=!working && !busy) { Text("Save and Export") }
                 OutlinedButton(colors=ButtonDefaults.outlinedButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick=leave@{ if(leaving) return@leave;val discardId=sessionId;leaving=true; model.run {try {utility.cancelAndDiscard(discardId);sessionId="";choosingExport=false;unsaved=false;revision++;if(initialSession.isNotEmpty()) back()} finally {leaving=false}} }) { Text(if(working) "Discard and Leave" else "Discard Changes and Leave") }
                 TextButton(onClick={ unsaved=false }) { Text(if(working) "Continue Processing" else "Continue Editing") }
             }

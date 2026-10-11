@@ -53,6 +53,12 @@ Open the APK on the Android device to install it. Android may ask permission to 
 
 Google Drive Backup requires a configured Google OAuth client. Building without one leaves sign-in unavailable; the offline tools remain usable.
 
+## Release signing
+
+Release builds require an existing private keystore and a Git-ignored `keystore.properties` configuration. They do not fall back to debug signing. The signing certificate must match the identity enforced by the project and the Android OAuth client used for Google Drive. See [Release signing](docs/RELEASE_SIGNING.md).
+
+The provided `Folio_v2_GitHub_Release.zip` includes actual model weights. Unlike GitHub's automatic source archive, it can be extracted and built without fetching LFS objects. The SDK, JDK, and Gradle dependency requirements still apply.
+
 ## License
 
 Folio uses [GNU AGPL v3](LICENSE). Corresponding iText source archives are included in [third-party-sources](third-party-sources), with dependency notices in [Licenses & credits](docs/THIRD_PARTY.md).

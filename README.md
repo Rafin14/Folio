@@ -29,6 +29,8 @@ Recorded before the latest UI refinements; some screens differ from the current 
 </tr>
 </table>
 
+[PDF page selection](docs/images/pdf-selection.png) · [OCR PDF search](docs/images/pdf-ocr-search.png)
+
 ## What you can do
 
 | Workflow | Capabilities |
@@ -37,7 +39,7 @@ Recorded before the latest UI refinements; some screens differ from the current 
 | **Edit** | Retained original images, crop, rotate, enhancement presets and adjustments, zoom inspection, page-size preview. |
 | **Organize** | Folders, favorites, grid/list views, sorting, rename, duplicate, move, long-press selection and page ordering. |
 | **Read & search** | Offline PaddleOCR, background or on-demand extraction, library text search, selectable text, highlighted word/phrase matches with previous/next navigation. |
-| **PDF Workspace** | Generate PDF from Folio pages, image to PDF, merge, split, PDF to PNG, and edit a working copy: draw, rotate, reorder, remove or replace pages. |
+| **PDF Workspace** | Generate PDF from saved Folio PDF pages, image to PDF, merge, split, PDF to PNG, and edit a working copy: draw, rotate, reorder, remove or replace pages. |
 | **Analyze PDFs offline** | Layout-Aware OCR with native text reuse or Full Page OCR using PaddleOCR directly, current-page/document processing, region/page copying and TXT export; original-image/vector figure extraction with a labeled PNG fallback; editable or layout-preserving DOCX conversion. |
 | **Share & print** | Android Sharesheet, PDF/image exports, separate or combined documents, selected-page exports, Android print preview for all or selected pages. |
 | **Recover** | Document/page Recycle Bin, restoration, permanent deletion, automatic removal after 60 days. |
@@ -45,7 +47,11 @@ Recorded before the latest UI refinements; some screens differ from the current 
 
 PDF replacement accepts an image or a selected PDF page, with a live **Match Page Size** preview. Exports offer quality/compression and password protection where supported. Larger PDF jobs provide progress, cancellation and interrupted-operation recovery.
 
-The PDF Workspace works with device files independently of the library and exports new files; it does not overwrite the original device source PDF. Device and imported Folio PDFs open in a page gallery before editing. An initial import is saved only with **Save to Folio**; Back offers **Keep Importing** or **Discard Import**. The gallery supports long-press drag reordering, and the editor supports bounded pinch zoom and panning with aligned drawings. Imported Folio PDFs can also be opened as temporary working copies and explicitly saved to storage, overwritten transactionally in Folio, or saved as a new Folio PDF. PDF editing is page manipulation and drawing, not editing existing PDF text.
+The PDF Workspace works with device files independently of the library and exports new files; it does not overwrite the original device source PDF. Device and imported Folio PDFs open in a page gallery before editing. An initial import is saved only with **Save to Folio**; Back offers **Keep Importing** or **Discard Import**. The gallery supports grid/list views, individual or select-all page selection, and **Print**, **Share**, and **Export**. Selected outputs follow the current gallery order; without a selection, printing and exporting include every page. Long-press drag reorders pages when selection is inactive.
+
+Returning from the editor to the gallery keeps the working copy and refreshes changed thumbnails. A warning appears when leaving a gallery with unsaved edits. Imported Folio PDFs can be explicitly saved to storage, overwritten transactionally in Folio, or saved as a new Folio PDF. The editor supports bounded pinch zoom and panning with aligned drawings. PDF editing is page manipulation and drawing, not editing existing PDF text.
+
+**OCR PDF search** finds words and phrases across processed pages without running recognition again. Previous/next navigation wraps through the matches and updates both selectable text and the page preview. Layout-Aware results highlight the matching layout blocks; Full Page results use stored text-line boundaries. Preview highlights remain aligned while zooming and panning. These are region highlights, not estimated word-level boxes.
 
 The new layout-analysis tools have a substantial memory requirement. DOCX reconstruction is best effort: ruled tables become editable cells where recognized, while ambiguous tables fall back to editable text with a warning.
 
@@ -55,7 +61,7 @@ Android **8.0 / API 26+** is required. If installing a packaged APK from the Git
 
 | APK | Device |
 | --- | --- |
-| `Folio_v2_arm64-v8a.apk` | Most modern Android phones. |
+| `Folio_v2_universal.apk` | ARM 32-bit and 64-bit Android phones. |
 
 Open the downloaded APK and allow installation from that browser/file manager when Android asks.
 

@@ -17,6 +17,10 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -26,6 +30,14 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.*
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
+import dev.folio.scanner.ocr.nextTextMatch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.asImageBitmap
@@ -46,6 +58,7 @@ import java.io.File
 
 @Composable internal fun PdfAnalysisScreen(model:LibraryViewModel,initialTool:String,initialSession:String="",back:()->Unit) {
     val utility=model.utility;val context=LocalContext.current
+    val focusManager=androidx.compose.ui.platform.LocalFocusManager.current
     var tool by rememberSaveable(initialTool) {mutableStateOf(initialTool)}
     var toolsMenu by remember {mutableStateOf(false)}
     var diagnostics by remember {mutableStateOf(false)}
@@ -61,6 +74,10 @@ import java.io.File
     var ocrMode by rememberSaveable {mutableStateOf(OcrMode.LAYOUT_AWARE)}
     var showBounds by rememberSaveable {mutableStateOf(true)}
     var selected by remember {mutableStateOf<AnalysisRegion?>(null)}
+    var searchOpen by rememberSaveable {mutableStateOf(false)}
+    var query by rememberSaveable {mutableStateOf("")}
+    var matchIndex by rememberSaveable(query) {mutableIntStateOf(0)}
+    val textScroll=rememberLazyListState()
     val busy by model.busy.collectAsStateWithLifecycle()
     var leaving by remember {mutableStateOf(false)}
     if(leaving) {
@@ -76,11 +93,24 @@ import java.io.File
     val info by produceState<JSONObject?>(null,session,jobs) {value=if(session.isEmpty()) null else withContext(Dispatchers.IO) {try {utility.session(session)} catch(_:java.io.FileNotFoundException) {null}}}
     val count=info?.getJSONArray("counts")?.getInt(0) ?: 0
     val title=info?.getJSONArray("names")?.getString(0)?.let(::pdfFileStem).orEmpty()
+    val matches by produceState<List<AnalysisSearchMatch>>(emptyList(),session,count,jobs,query) {
+        value=emptyList()
+        if(query.isNotBlank() && session.isNotEmpty()) {delay(180);value=withContext(Dispatchers.IO) {
+            buildList {repeat(count) {index ->ensureActive();val file=ocrResultFile(utility.folder(session,create=false),index)
+                if(file.isFile) runCatching {AnalysisPage.parse(JSONObject(file.readText()))}.getOrNull()?.let {addAll(searchAnalysisPage(it,query))}
+            }}
+        }}
+    }
+    val activeMatch=matches.getOrNull(matchIndex.coerceAtMost((matches.size-1).coerceAtLeast(0)))
+    LaunchedEffect(activeMatch) {activeMatch?.let {pageIndex=it.page;selected=null}}
     val page by produceState<AnalysisPage?>(null,session,pageIndex,jobs) {
         value=if(session.isEmpty()) null else withContext(Dispatchers.IO) {runCatching {AnalysisPage.parse(JSONObject(ocrResultFile(utility.folder(session,create=false),pageIndex).readText()))}.getOrNull()}
     }
     // Animated/lazy content can outlive this composition while the next page loads.
     val displayedPage=page
+    val pageMatches=matches.filter {it.page==displayedPage?.index}
+    val focusedHits=activeMatch?.takeIf {it.page==displayedPage?.index}?.hits.orEmpty()
+    LaunchedEffect(displayedPage,activeMatch,textTab,fullscreen) {val index=displayedPage?.regions?.filter {it.text.isNotBlank()}?.sortedBy {it.order}?.indexOfFirst {it.id==focusedHits.firstOrNull()?.region} ?: -1;if(index>=0 && (textTab || fullscreen)) textScroll.animateScrollToItem(index)}
     val completePages by produceState(false,session,count,jobs,tool) {
         value=session.isNotEmpty() && count>0 && withContext(Dispatchers.IO) {(0 until count).all {index ->
             (if(tool=="ocr") ocrResultFile(utility.folder(session,create=false),index) else File(utility.folder(session,create=false),"analysis-$index.json")).isFile
@@ -94,7 +124,7 @@ import java.io.File
     val picker=rememberLauncherForActivityResult(PdfInputPicker()) {uris ->uris.firstOrNull()?.let {input=it.toString()}}
     val export=rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) {uri ->if(uri!=null) model.run {withContext(Dispatchers.IO) {utility.exportAnalysis(session,uri,"text")}}}
     fun copy(text:String) {if(text.length>200000) {model.error.value="Too much text for the clipboard. Export a TXT file instead.";return};context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Folio PDF text",text))}
-    fun close() {if(fullscreen) fullscreen=false else if(session.isNotEmpty()) discard=true else back()}
+    fun close() {if(searchOpen) {searchOpen=false;query=""} else if(fullscreen) fullscreen=false else if(session.isNotEmpty()) discard=true else back()}
     BackHandler {close()}
     val screenTitle=when(tool) {"figures"->"Images and figures";"word"->"PDF to Word";else->"OCR PDF"}
     @Composable fun OcrControls() {
@@ -106,7 +136,8 @@ import java.io.File
                         Button(onClick={ocrOptions=false;selected=null;utility.analyze(session,mode=ocrMode,rerun=true,replaceOcr=true)},enabled=count>0 && active==null && exportActive==null && !busy) {Text("OCR Entire Document")}
                     }
     }
-    Scaffold(topBar={TopAppBar(title={Text(if(fullscreen) "Extracted text" else screenTitle)},navigationIcon={IconButton(onClick=::close) {Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back")}},actions={
+    Scaffold(modifier=Modifier.imePadding(),topBar={TopAppBar(title={Text(if(fullscreen) "Extracted text" else screenTitle)},navigationIcon={IconButton(onClick=::close) {Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back")}},actions={
+        if(session.isNotEmpty() && tool=="ocr") IconButton(onClick={searchOpen=!searchOpen;if(!searchOpen) query=""}) {Icon(Icons.Outlined.Search,"Search OCR PDF")}
         if(displayedPage!=null && tool=="ocr") IconButton(onClick={copy(displayedPage.text)}) {Icon(Icons.Outlined.ContentCopy,"Copy page text")}
         if(displayedPage!=null && tool=="ocr") IconButton(onClick={fullscreen=!fullscreen;textTab=true}) {Icon(if(fullscreen) Icons.Outlined.FullscreenExit else Icons.Outlined.Fullscreen,"Fullscreen text")}
         if(session.isNotEmpty()) Box {
@@ -120,6 +151,17 @@ import java.io.File
         }
     })}) {padding ->
         Column(Modifier.fillMaxSize().padding(padding),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+            if(searchOpen && tool=="ocr") Column(Modifier.padding(horizontal=12.dp)) {
+                Row(verticalAlignment=Alignment.CenterVertically) {
+                    OutlinedTextField(query,{query=it},singleLine=true,placeholder={Text("Search PDF text")},modifier=Modifier.weight(1f),trailingIcon={if(query.isNotEmpty()) IconButton(onClick={query=""}) {Icon(Icons.Outlined.Clear,"Clear PDF search")}})
+                    IconButton(onClick={searchOpen=false;query=""}) {Icon(Icons.Outlined.Close,"Close PDF search")}
+                }
+                Row(verticalAlignment=Alignment.CenterVertically) {
+                    Text(if(matches.isEmpty()) "0 matches" else "${matches.indexOf(activeMatch)+1} of ${matches.size}",Modifier.weight(1f),style=MaterialTheme.typography.labelMedium)
+                    IconButton(onClick={focusManager.clearFocus();matchIndex=nextTextMatch(matchIndex,-1,matches.size)},enabled=matches.isNotEmpty()) {Icon(Icons.Outlined.ChevronLeft,"Previous PDF match")}
+                    IconButton(onClick={focusManager.clearFocus();matchIndex=nextTextMatch(matchIndex,1,matches.size)},enabled=matches.isNotEmpty()) {Icon(Icons.Outlined.ChevronRight,"Next PDF match")}
+                }
+            }
             if(session.isEmpty()) Column(Modifier.padding(24.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                 Text(when(tool) {"figures"->"Keep the complete figure";"word"->"Make your PDF editable";else->"Read your PDF offline"},style=MaterialTheme.typography.headlineSmall)
                 Text(when(tool) {"figures"->"Original images where possible, vector PDF for self-contained vector figures, high-resolution PNG for composite regions.";"word"->"Native text and on-device OCR become editable paragraphs, tables and figures in a Word document.";else->"Native PDF text is preserved. Scanned regions use document layout and on-device OCR."},color=MaterialTheme.colorScheme.onSurfaceVariant)
@@ -165,10 +207,12 @@ import java.io.File
                 if(!fullscreen && !textTab && !compact) Row(Modifier.padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically) {Switch(showBounds,{showBounds=it});Spacer(Modifier.width(8.dp));Text(if(displayedPage?.mode==OcrMode.FULL_PAGE) "Show text boundaries" else "Show layout boundaries",style=MaterialTheme.typography.bodySmall)}
                 if(displayedPage!=null) {
                     AnimatedContent(textTab || fullscreen,Modifier.weight(1f),transitionSpec={fadeIn(tween(160)) togetherWith fadeOut(tween(120))},label="Analysis view") {reading ->
-                    if(reading) SelectionContainer(Modifier.fillMaxSize()) {LazyColumn(Modifier.fillMaxSize(),contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
+                    if(reading) SelectionContainer(Modifier.fillMaxSize()) {LazyColumn(Modifier.fillMaxSize(),state=textScroll,contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
                         if(displayedPage.text.isBlank()) item {Text("No readable text found on this page.")}
-                        items(displayedPage.regions.filter {it.text.isNotBlank()}.sortedBy {it.order}) {region ->Text(region.text)}
-                    }} else AnalysisOverlay(File(utility.folder(session,create=false),"analysis-$pageIndex.jpg"),displayedPage,Modifier.fillMaxSize(),showBounds) {selected=it}
+                        items(displayedPage.regions.filter {it.text.isNotBlank()}.sortedBy {it.order},key={it.id}) {region ->
+                            SearchHighlightedText(region.text,pageMatches.flatMap {it.hits}.filter {it.region==region.id}.map {it.range},focusedHits.firstOrNull {it.region==region.id}?.range)
+                        }
+                    }} else AnalysisOverlay(File(utility.folder(session,create=false),"analysis-$pageIndex.jpg"),displayedPage,Modifier.fillMaxSize(),showBounds,pageMatches.flatMap {it.hits}.map {it.box},focusedHits.map {it.box}) {selected=it}
                     }
                 } else Box(Modifier.weight(1f).fillMaxWidth(),contentAlignment=Alignment.Center) {Text(if(active==null) "Start or retry analysis to read this page." else "This page is being prepared…",Modifier.padding(24.dp))}
                 if(!fullscreen) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal=16.dp,vertical=8.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
@@ -201,13 +245,22 @@ import java.io.File
     }}}
 }
 
-@Composable internal fun AnalysisOverlay(file:File,page:AnalysisPage,modifier:Modifier=Modifier,showBounds:Boolean=true,select:(AnalysisRegion)->Unit) {
+@Composable internal fun AnalysisOverlay(file:File,page:AnalysisPage,modifier:Modifier=Modifier,showBounds:Boolean=true,highlights:List<dev.folio.scanner.pdfanalysis.Box> = emptyList(),focused:List<dev.folio.scanner.pdfanalysis.Box> = emptyList(),select:(AnalysisRegion)->Unit) {
     // Compose's retained render nodes may draw a previous image after disposal; UI bitmaps use GC.
     val bitmap by produceState<android.graphics.Bitmap?>(null,file.path) {value=null;value=withContext(Dispatchers.IO) {BitmapFactory.decodeFile(file.path)}}
     val color=MaterialTheme.colorScheme.primary
     val labelBackground=MaterialTheme.colorScheme.primaryContainer
     val labelColor=MaterialTheme.colorScheme.onPrimaryContainer
-    Box(modifier.pointerInput(page) {detectTapGestures {position ->val fit=FitTransform.create(page.width,page.height,size.width.toFloat(),size.height.toFloat());page.regions.filter {fit.map(it.box).contains(position.x,position.y)}.minByOrNull {it.box.width*it.box.height}?.let(select)}}) {
+    var zoom by remember(page.index) {mutableFloatStateOf(1f)}
+    var pan by remember(page.index) {mutableStateOf(Offset.Zero)}
+    var viewport by remember {mutableStateOf(IntSize.Zero)}
+    fun bounded(value:Offset)=Offset(value.x.coerceIn(-viewport.width*(zoom-1)/2,viewport.width*(zoom-1)/2),value.y.coerceIn(-viewport.height*(zoom-1)/2,viewport.height*(zoom-1)/2))
+    LaunchedEffect(page.index,focused,viewport) {if(viewport.width>0 && focused.isNotEmpty()) {
+        val box=FitTransform.create(page.width,page.height,viewport.width.toFloat(),viewport.height.toFloat()).map(focused.first())
+        zoom=maxOf(zoom,2f);pan=bounded(Offset((viewport.width/2f-(box.left+box.right)/2)*zoom,(viewport.height/2f-(box.top+box.bottom)/2)*zoom))
+    }}
+    Box(modifier.clipToBounds().onSizeChanged {viewport=it}.pointerInput(page.index) {detectTransformGestures {_,delta,scale,_ ->zoom=(zoom*scale).coerceIn(1f,5f);pan=bounded(pan+delta)}}) {
+    Box(Modifier.fillMaxSize().graphicsLayer {scaleX=zoom;scaleY=zoom;translationX=pan.x;translationY=pan.y}.pointerInput(page) {detectTapGestures {position ->val fit=FitTransform.create(page.width,page.height,size.width.toFloat(),size.height.toFloat());page.regions.filter {fit.map(it.box).contains(position.x,position.y)}.minByOrNull {it.box.width*it.box.height}?.let(select)}}) {
         bitmap?.let {Image(it.asImageBitmap(),if(page.mode==OcrMode.FULL_PAGE) "PDF page with text regions" else "PDF page with layout regions",Modifier.fillMaxSize())}
         if(showBounds) Canvas(Modifier.fillMaxSize()) {val fit=FitTransform.create(page.width,page.height,size.width,size.height)
             val paint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {this.color=labelColor.toArgb();textSize=10.dp.toPx()}
@@ -219,5 +272,13 @@ import java.io.File
                 }
             }
         }
+        if(highlights.isNotEmpty()) Canvas(Modifier.fillMaxSize()) {
+            val fit=FitTransform.create(page.width,page.height,size.width,size.height)
+            highlights.distinct().forEach {source ->val b=fit.map(source);val current=source in focused
+                drawRect(color.copy(alpha=if(current) .16f else .07f),Offset(b.left,b.top),Size(b.width,b.height))
+                drawRect(color.copy(alpha=if(current) 1f else .55f),Offset(b.left,b.top),Size(b.width,b.height),style=Stroke(if(current) 2.5.dp.toPx() else 1.dp.toPx()))
+            }
+        }
+    }
     }
 }

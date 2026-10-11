@@ -41,7 +41,7 @@ class PdfWorkspaceIntegrationTest {
     private suspend fun open(kind:String,inputs:List<Uri>)=utility.open(kind,inputs).also { sessions+=it }
     private suspend fun direct(id:String,dest:Uri,title:String,selection:String="",isTree:Boolean=false) { utility.save(id,utility.session(id).put("destination",dest.toString()).put("tree",isTree).put("title",title).put("selection",selection).put("state","pending")); utility.execute(id) { _,_ -> } }
     private suspend fun cleanup() { sessions.forEach { runCatching { utility.discard(it) } }; resources.reversed().forEach { runCatching { DocumentsContract.deleteDocument(resolver,it) } } }
-    @Test fun folioPdfAndScanInputsReuseSplitRasterAndMixedMergeWithoutChangingDocuments()=runBlocking {
+    @Test fun folioPdfInputsReuseSplitRasterAndMergeWhileRejectingScansWithoutChangingDocuments()=runBlocking {
         val src=source("Native ${UUID.randomUUID()}.pdf")
         val file=File(context.cacheDir,"folio-source-${UUID.randomUUID()}.pdf").apply {writeBytes(bytes(src))}
         val pdf=utility.documents.importPdf(file,"Native source ${UUID.randomUUID()}",utility.engine)
@@ -64,11 +64,17 @@ class PdfWorkspaceIntegrationTest {
             val rasterFolder=Uri.parse(utility.session(raster).getString("outputFolder"));resources+=rasterFolder
             assertEquals(1,children(rasterFolder).size)
             resolver.openInputStream(children(rasterFolder).single().second)!!.use {assertNotNull(android.graphics.BitmapFactory.decodeStream(it)?.also {b ->b.recycle()})}
-            val merge=utility.openFolioInput("merge",pdf).also {sessions+=it};utility.addFolioMergeInput(merge,scan)
-            val output=create("Folio mixed merge ${UUID.randomUUID()}.pdf");direct(merge,output,"Mixed Folio documents")
+            val merge=utility.openFolioInput("merge",pdf).also {sessions+=it}
+            assertTrue(runCatching {utility.addFolioMergeInput(merge,scan)}.exceptionOrNull() is IllegalArgumentException)
+            utility.addFolioMergeInput(merge,pdf)
+            val output=create("Folio PDF merge ${UUID.randomUUID()}.pdf");direct(merge,output,"Folio PDFs")
             result.writeBytes(bytes(output))
-            try {utility.engine.read(result).use {p ->assertEquals(5,p.numberOfPages);assertTrue(com.itextpdf.kernel.pdf.canvas.parser.PdfTextExtractor.getTextFromPage(p.getPage(1)).contains("PAGE 1"));assertEquals(148.0*72/25.4,p.getPage(5).pageSize.width.toDouble(),1.0)}} finally {result.delete()}
-            val scanSplit=utility.openFolioInput("split",scan).also {sessions+=it};assertEquals(1,utility.session(scanSplit).getJSONArray("counts").getInt(0))
+            try {utility.engine.read(result).use {p ->assertEquals(8,p.numberOfPages);assertTrue(com.itextpdf.kernel.pdf.canvas.parser.PdfTextExtractor.getTextFromPage(p.getPage(5)).contains("PAGE 1"))}} finally {result.delete()}
+            listOf("split","merge","raster").forEach {kind ->assertTrue(runCatching {utility.openFolioInput(kind,scan)}.exceptionOrNull() is IllegalArgumentException)}
+            val selected=listOf(FolioPageChoice(scan,page))
+            assertTrue(runCatching {utility.fromPages(selected,pdfOnly=true)}.exceptionOrNull() is IllegalArgumentException)
+            val ordinary=utility.fromPages(selected).also {sessions+=it}
+            assertEquals(1,utility.session(ordinary).getJSONArray("images").length())
             assertEquals(before,utility.documents.dao.allDocuments());assertEquals(originals,utility.documents.dao.pages(pdf)+utility.documents.dao.pages(scan));assertArrayEquals(bytes(src),file.readBytes())
             assertTrue(File(context.cacheDir,"shared-pdfs").listFiles().orEmpty().none {it.name.startsWith("utility-")})
         } finally {cleanup();utility.documents.purgeForTest(pdf);utility.documents.purgeForTest(scan);file.delete()}
@@ -94,6 +100,39 @@ class PdfWorkspaceIntegrationTest {
                 assertTrue(utility.pages(id).all { it.rotation==90 })
             }
         } finally { stop.set(true);reader.await();cleanup() }
+    }
+    @Test fun gallerySnapshotsUseCurrentOrderEditsAndExactSelectionWithoutChangingSource()=runBlocking {
+        val src=source("Gallery ${UUID.randomUUID()}.pdf");val original=bytes(src)
+        val id=open("edit",listOf(src))
+        try {
+            val initial=utility.pages(id)
+            val edited=listOf(initial[2].copy(rotation=90),initial[0],initial[3],initial[1])
+            utility.updatePages(id,edited)
+            val thumbnail=utility.galleryPreview(id,edited[0]);thumbnail.recycle()
+            val cache=utility.folder(id).listFiles()!!.filter {it.name.startsWith("thumb-")}
+            assertEquals(1,cache.size);val modified=cache.single().lastModified()
+            utility.galleryPreview(id,edited[0]).recycle();assertEquals(modified,cache.single().lastModified())
+            utility.galleryPreview(id,edited[0].copy(rotation=180)).recycle()
+            assertEquals(2,utility.folder(id).listFiles()!!.count {it.name.startsWith("thumb-")})
+            val drawn=edited[0].copy(ink=listOf(PdfInk(Color.RED,.02f,listOf(InkPoint(.2f,.5f),InkPoint(.8f,.5f)))))
+            val drawing=utility.galleryPreview(id,drawn)
+            try {val pixels=IntArray(drawing.width*drawing.height);drawing.getPixels(pixels,0,drawing.width,0,0,drawing.width,drawing.height);assertTrue("Gallery thumbnail includes the live drawing",pixels.count {Color.red(it)>180 && Color.green(it)<100 && Color.blue(it)<100}>100)} finally {drawing.recycle()}
+            val replacement=File(utility.folder(id),"test-replacement.pdf")
+            utility.engine.combine(listOf(PdfSource(File(utility.folder(id),"input-0"),listOf(4))),replacement,"Replacement")
+            utility.galleryPreview(id,edited[0].copy(replacement=replacement.path)).recycle()
+            assertEquals(4,utility.folder(id).listFiles()!!.count {it.name.startsWith("thumb-")})
+            val selected=utility.snapshotEdited(id,linkedSetOf(initial[1].id,initial[2].id))
+            try {utility.engine.read(selected).use {pdf ->
+                assertEquals(2,pdf.numberOfPages);assertEquals(90,pdf.getPage(1).rotation)
+                assertTrue(com.itextpdf.kernel.pdf.canvas.parser.PdfTextExtractor.getTextFromPage(pdf.getPage(1)).contains("PAGE 3"))
+                assertTrue(com.itextpdf.kernel.pdf.canvas.parser.PdfTextExtractor.getTextFromPage(pdf.getPage(2)).contains("PAGE 2"))
+            };val uri=create("Selected gallery ${UUID.randomUUID()}.pdf");utility.publishOutput(selected,uri);assertArrayEquals(selected.readBytes(),bytes(uri))} finally {selected.delete()}
+            val all=utility.snapshotEdited(id)
+            try {utility.engine.read(all).use {assertEquals(4,it.numberOfPages)}} finally {all.delete()}
+            assertTrue(runCatching {utility.snapshotEdited(id,setOf("missing"))}.exceptionOrNull() is IllegalArgumentException)
+            assertTrue(utility.session(id).getBoolean("dirty"));assertEquals(edited,utility.pages(id));assertArrayEquals(original,bytes(src))
+            utility.updatePages(id,edited.dropLast(1));assertEquals(3,utility.pages(id).size)
+        } finally {cleanup()}
     }
     @Test fun mergeCanStartWithOneThenAppendRemoveAndReorder()=runBlocking {
         val a=source("A ${UUID.randomUUID()}.pdf"); val b=source("B ${UUID.randomUUID()}.pdf"); val c=source("C ${UUID.randomUUID()}.pdf")

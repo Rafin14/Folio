@@ -4,6 +4,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
+fun selectedUtilityPages(pages:List<UtilityPage>,ids:Set<String>?):List<UtilityPage> {
+    require(ids==null || ids.isNotEmpty() && ids.all {id -> pages.any {it.id==id}}) { "Selected PDF pages are no longer available." }
+    return pages.filter {ids==null || it.id in ids}.also {require(it.isNotEmpty()) {"No PDF pages available."}}
+}
+
 fun pdfFileStem(name: String): String = name.substringBeforeLast('.', name).replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), "_").trim().trim('.').take(120).ifBlank { "Document" }
 fun splitGroups(text: String, count: Int): List<List<Int>> = if(text.isBlank()) (1..count).map { listOf(it) } else text.split(',').map { pageSelection(it,count) }.also { groups -> require(groups.flatten().distinct().size==groups.sumOf { it.size }) { "Choose each page once." } }
 fun splitFilename(stem: String, pages: List<Int>): String = "$stem ${if(pages.size==1) "Page ${pages.single()}" else "Pages ${pages.first()}-${pages.last()}"}.pdf"

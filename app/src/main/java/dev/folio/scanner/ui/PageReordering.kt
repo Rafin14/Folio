@@ -39,11 +39,12 @@ internal fun ReorderHandle(id:String,order:List<String>,bounds:Map<String,Rect>,
 }
 
 @Composable
-internal fun Modifier.pageDragGesture(id:String,order:List<String>,bounds:Map<String,Rect>,active:(String?)->Unit,target:(String?)->Unit,offset:(Offset)->Unit,select:()->Unit,drop:(List<String>)->Unit):Modifier {
+internal fun Modifier.pageDragGesture(id:String,order:List<String>,bounds:Map<String,Rect>,active:(String?)->Unit,target:(String?)->Unit,offset:(Offset)->Unit,select:()->Unit,drop:(List<String>)->Unit,enabled:Boolean=true):Modifier {
     val latestOrder by rememberUpdatedState(order); val latestBounds by rememberUpdatedState(bounds)
     val latestActive by rememberUpdatedState(active); val latestTarget by rememberUpdatedState(target)
     val latestOffset by rememberUpdatedState(offset); val latestSelect by rememberUpdatedState(select); val latestDrop by rememberUpdatedState(drop)
-    return this.pointerInput(id) {
+    return this.pointerInput(id,enabled) {
+        if(!enabled) return@pointerInput
         var point=Offset.Zero; var start=Offset.Zero; var origin=Rect.Zero; var destination=id; var moved=false
         fun finish() { latestActive(null); latestTarget(null); latestOffset(Offset.Zero) }
         detectDragGesturesAfterLongPress(onDragStart={ p -> origin=latestBounds[id] ?: Rect.Zero; start=origin.topLeft+p; point=start; destination=id; moved=false; latestActive(id); latestTarget(id) },onDragCancel={ finish() },onDragEnd={

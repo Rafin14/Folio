@@ -8,6 +8,7 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.UiDevice
 import com.itextpdf.kernel.pdf.*
 import dagger.hilt.android.EntryPointAccessors
 import dev.folio.scanner.pdf.PdfWorkerDependencies
@@ -26,6 +27,49 @@ import java.util.UUID
 
 class PdfAnalysisUiTest {
     @get:Rule val compose=createAndroidComposeRule<MainActivity>()
+    @Test fun searchStoredWordsAndPhrasesWrapsAcrossPagesWithoutRecognizingAgain() {
+        val inst=InstrumentationRegistry.getInstrumentation();val context=inst.targetContext
+        val utility=EntryPointAccessors.fromApplication(context,PdfWorkerDependencies::class.java).utility()
+        val id=UUID.randomUUID().toString();val folder=utility.folder(id)
+        utility.save(id,JSONObject().put("kind","analysis").put("analysisTool","ocr").put("counts",JSONArray(listOf(2))).put("names",JSONArray(listOf("Search example.pdf"))).put("state","editing"))
+        val originals=List(2) {index ->
+            val text=if(index==0) "Hello world. HELLO world." else "A final hello world."
+            val result=AnalysisPage(index,595,842,595.0,842.0,listOf(AnalysisRegion(0,"text",Box(45f,85f,450f,135f),0,text,native=true)),JSONArray(),"CPUExecutionProvider",mode=if(index==0) OcrMode.LAYOUT_AWARE else OcrMode.FULL_PAGE).json().toString()
+            File(folder,"analysis-$index.json").writeText(result)
+            val bitmap=Bitmap.createBitmap(595,842,Bitmap.Config.ARGB_8888).apply {eraseColor(Color.WHITE);Canvas(this).drawText(text,45f,120f,Paint(Paint.ANTI_ALIAS_FLAG).apply {color=Color.BLACK;textSize=24f})}
+            File(folder,"analysis-$index.jpg").outputStream().use {bitmap.compress(Bitmap.CompressFormat.JPEG,95,it)};bitmap.recycle();result
+        }
+        fun waitText(text:String) {compose.waitUntil(15000) {compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()}}
+        try {
+            listOf("Light","Dark","AMOLED").forEach {theme ->
+                compose.activityRule.scenario.onActivity {activity ->val model=ViewModelProvider(activity)[LibraryViewModel::class.java];activity.setContent {key(theme) {FolioTheme(theme) {PdfAnalysisScreen(model,"ocr",id) {}}}}}
+                waitText("1 of 2");compose.onNodeWithContentDescription("Search OCR PDF").performClick()
+                compose.onNode(hasSetTextAction()).performTextInput("HELLO")
+                waitText("1 of 3");compose.onNodeWithText("Text",substring=false).performClick();compose.runOnUiThread {context.getSystemService(android.view.inputmethod.InputMethodManager::class.java).hideSoftInputFromWindow(compose.activity.window.decorView.windowToken,0)};UiDevice.getInstance(inst).waitForIdle()
+                compose.onNodeWithText("Hello world. HELLO world.").assertIsDisplayed()
+                assertTrue(UiDevice.getInstance(inst).takeScreenshot(File(context.getExternalFilesDir(null),"pdf-search-text-$theme.png")))
+                compose.onNodeWithText("Page",substring=false).performClick()
+                compose.waitUntil(15000) {compose.onAllNodesWithContentDescription("PDF page with layout regions").fetchSemanticsNodes().isNotEmpty()}
+                compose.onNodeWithContentDescription("PDF page with layout regions").performTouchInput {pinch(androidx.compose.ui.geometry.Offset(width*.4f,height*.5f),androidx.compose.ui.geometry.Offset(width*.2f,height*.5f),androidx.compose.ui.geometry.Offset(width*.6f,height*.5f),androidx.compose.ui.geometry.Offset(width*.8f,height*.5f))}
+                compose.onNodeWithContentDescription("Next PDF match").performClick();waitText("2 of 3")
+                assertTrue(UiDevice.getInstance(inst).takeScreenshot(File(context.getExternalFilesDir(null),"pdf-search-zoom-$theme.png")))
+                compose.onNodeWithText("Text",substring=false).performClick()
+                compose.onNodeWithContentDescription("Next PDF match").performClick();waitText("3 of 3");waitText("A final hello world.")
+                compose.onNodeWithContentDescription("Next PDF match").performClick();waitText("1 of 3")
+                compose.onNodeWithContentDescription("Previous PDF match").performClick();waitText("3 of 3")
+                compose.onNode(hasSetTextAction()).performTextReplacement("hello world");waitText("1 of 3")
+                compose.onNodeWithText("Page",substring=false).performClick()
+                compose.onNodeWithContentDescription("Next PDF match").performClick();compose.onNodeWithContentDescription("Next PDF match").performClick();waitText("3 of 3")
+                compose.waitUntil(15000) {compose.onAllNodesWithContentDescription("PDF page with text regions").fetchSemanticsNodes().isNotEmpty()}
+                assertTrue(UiDevice.getInstance(inst).takeScreenshot(File(context.getExternalFilesDir(null),"pdf-search-$theme.png")))
+                compose.onNode(hasSetTextAction()).performTextReplacement("absent phrase");waitText("0 matches")
+                compose.onNodeWithContentDescription("Next PDF match").assertIsNotEnabled()
+                compose.onNodeWithContentDescription("Clear PDF search").performClick();compose.onNodeWithContentDescription("Close PDF search").performClick()
+            }
+            repeat(2) {assertEquals(originals[it],File(folder,"analysis-$it.json").readText())}
+            assertTrue(utility.work.getWorkInfosByTag("analysis-$id").get().isEmpty())
+        } finally {runBlocking {utility.discard(id)}}
+    }
     @Test fun textNavigationToAnUnpreparedPageKeepsAnimatedContentSafe() {
         val context=InstrumentationRegistry.getInstrumentation().targetContext
         val utility=EntryPointAccessors.fromApplication(context,PdfWorkerDependencies::class.java).utility()

@@ -4,6 +4,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PdfUtilityModelsTest {
+    @Test fun gallerySelectionUsesCurrentOrderAndIncludesEdits() {
+        val a=UtilityPage(id="a",source=3,rotation=90);val b=UtilityPage(id="b",source=1);val c=UtilityPage(id="c",source=2)
+        assertEquals(listOf(a,c),selectedUtilityPages(listOf(a,b,c),linkedSetOf("c","a")))
+        assertEquals(listOf(a,b,c),selectedUtilityPages(listOf(a,b,c),null))
+        assertTrue(runCatching {selectedUtilityPages(listOf(a),emptySet())}.isFailure)
+        assertTrue(runCatching {selectedUtilityPages(listOf(a),setOf("gone"))}.isFailure)
+    }
     @Test fun selectedPagesPreserveTapOrderAndRenumberAfterRemoval() {
         val a=FolioPageChoice("A","3"); val b=FolioPageChoice("A","1"); val c=FolioPageChoice("B","2")
         val selected=listOf(a,b,c)
