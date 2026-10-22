@@ -53,11 +53,21 @@ Open the APK on the Android device to install it. Android may ask permission to 
 
 Google Drive Backup requires a configured Google OAuth client. Building without one leaves sign-in unavailable; the offline tools remain usable.
 
+## Run checks
+
+On Windows, run the build, unit tests and Android lint through the existing check script:
+
+```powershell
+.\scripts\check.ps1
+```
+
+Add `-Device` to also run instrumentation tests on a connected Android device or emulator. The equivalent Gradle checks on any platform are `:app:assembleDebug :app:testDebugUnitTest :app:lintDebug`; instrumentation tests use `:app:connectedDebugAndroidTest`.
+
 ## Release signing
 
 Release builds require an existing private keystore and a Git-ignored `keystore.properties` configuration. They do not fall back to debug signing. The signing certificate must match the identity enforced by the project and the Android OAuth client used for Google Drive. See [Release signing](docs/RELEASE_SIGNING.md).
 
-The provided `Folio_v2_GitHub_Release.zip` includes actual model weights. Unlike GitHub's automatic source archive, it can be extracted and built without fetching LFS objects. The SDK, JDK, and Gradle dependency requirements still apply.
+The prepared `Folio_GitHub_Source.zip` includes actual model weights. Unlike GitHub's automatic source archive, it can be extracted and built without fetching LFS objects. The SDK, JDK, and Gradle dependency requirements still apply. Local OAuth and signing configuration are excluded; configure them separately when needed.
 
 ## License
 

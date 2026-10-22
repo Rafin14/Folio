@@ -62,6 +62,15 @@ class BackupUiTest {
             compose.onNodeWithText("Back Up Now").performScrollTo().assertIsNotEnabled()
             compose.onNodeWithText("Find backup to restore").performScrollTo().assertIsEnabled()
             assertFalse(repo.state.value.backupUnlocked)
+            runBlocking {
+                db.documents().save(BackupRecord("fresh@example.invalid:cloud-purge","","",0,1,"cloud-purged"))
+                repo.refresh()
+            }
+            compose.waitUntil(10000) { repo.state.value.backupUnlocked }
+            compose.onNodeWithText("Back Up Now").performScrollTo().assertIsEnabled()
+            assertTrue(androidx.test.uiautomator.UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).takeScreenshot(java.io.File(context.getExternalFilesDir(null),"backup-purge-unlocked.png")))
+            compose.onNodeWithContentDescription("Automatic backup").performScrollTo().assertIsOff().assertIsNotEnabled()
+            compose.onNodeWithText("Cloud backup deleted",substring=false).performScrollTo().assertIsDisplayed()
         } finally { pipeline.close(); db.close(); context.deleteDatabase(name) }
     }
     @Test fun connectedControlsRequireUploadConsentAndStayUsableInBothThemesAndLargeText() {

@@ -10,7 +10,7 @@ Open **Google Drive Backup** in Folio's settings and connect an eligible Google 
 
 Connecting an account does not upload documents. Automatic backup requires explicit opt-in.
 
-On a fresh installation, uploads remain locked until an existing, nonempty Folio backup has been restored. An account with no existing backup cannot create its first backup through this flow.
+On a fresh installation, choose **Find backup to restore** to check the connected account. If a backup exists, restore it before uploading. If the check confirms there is no completed backup, uploads are unlocked without a restore. A verified **Delete All Cloud Backup** also removes the restore requirement, including after restarting Folio. Network, authorization, or inspection failures do not count as an empty backup. Automatic backup stays paused after a purge until you explicitly choose **Back Up Now** and enable it again.
 
 Backups include saved library PDFs, original and edited page images, document metadata, recoverable Recycle Bin contents and supported OCR results. External exports, unfinished scans and temporary PDF Workspace sessions are excluded.
 

@@ -37,3 +37,7 @@ verification/
 .tools/
 *.zip
 
+# Recoverable cleanup material and generated release checksums
+DELETE_ME_REVIEW/
+/SHA256SUMS.txt
+

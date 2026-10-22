@@ -459,6 +459,76 @@ class BackupIntegrationTest {
         }
         fun latest():RestorePreview { val e=entries.filter { it.role=="manifest" }.sortedBy { BackupManifest.decode(it.bytes).createdAt }.last(); return RestorePreview(e.id,sha256(e.bytes),BackupManifest.decode(e.bytes),e.parent) }
     }
+    @Test fun verifiedPurgeUnlocksReinstalledAppWithoutRestoreButStillRequiresExplicitBackup()=runBlocking {
+        fixture { db,docs,old,drive ->
+            val id=docs.create("Local document stays"); docs.importImage(id,ByteArrayInputStream(image()),detectDocument=false)
+            old.execute(old.prepare(false),drive)
+            val before=docs.librarySnapshot()
+            backupContext.getSharedPreferences("drive-backup-safety",0).edit().putBoolean("unlocked",false).commit()
+            val pipeline=ImagePipeline(context)
+            try {
+                val fresh=FolioBackupRepository(backupContext,db,docs,FakeAuth(),pipeline)
+                fresh.initializeSafety(); assertFalse(fresh.state.value.backupUnlocked)
+                fresh.requestCloudPurge("fixture@example.invalid","DELETE")
+                assertFalse(fresh.state.value.backupUnlocked)
+                drive.failAfterOnePurge=true
+                try { fresh.executeCloudPurge("fixture@example.invalid",drive); fail("Partial purge completed") } catch(_:IOException) {}
+                assertFalse(fresh.state.value.backupUnlocked)
+                try { fresh.discover(FakeDrive()); fail("Pending purge unlocked uploads") } catch(_:IllegalStateException) {}
+                assertFalse(fresh.state.value.backupUnlocked)
+                assertTrue(fresh.executeCloudPurge("fixture@example.invalid",drive))
+                assertTrue(fresh.state.value.backupUnlocked); assertFalse(fresh.state.value.automatic)
+                assertTrue(drive.entries.isEmpty()); assertEquals(before,docs.librarySnapshot())
+                try { fresh.automatic(true); fail("Purge restarted automatic backup") } catch(_:IllegalStateException) {}
+                // Simulate death after the durable purge receipt but before preferences were committed.
+                backupContext.getSharedPreferences("drive-backup-safety",0).edit().putBoolean("unlocked",false).commit()
+                val resumed=FolioBackupRepository(backupContext,db,docs,FakeAuth(),pipeline)
+                resumed.initializeSafety(); assertTrue(resumed.state.value.backupUnlocked)
+                resumed.backUpNow(); resumed.execute(resumed.prepare(false),drive)
+                assertTrue(drive.entries.any { it.role=="manifest" }); assertEquals(before,docs.librarySnapshot())
+            } finally { pipeline.close() }
+        }
+    }
+    @Test fun verifiedEmptyDiscoveryUnlocksWithoutUploadingAndPersistsAcrossRestart()=runBlocking {
+        fixture { db,docs,_,drive ->
+            backupContext.getSharedPreferences("drive-backup-safety",0).edit().putBoolean("unlocked",false).commit()
+            val pipeline=ImagePipeline(context)
+            try {
+                val fresh=FolioBackupRepository(backupContext,db,docs,FakeAuth(),pipeline)
+                assertFalse(fresh.state.value.backupUnlocked)
+                assertNull(fresh.discover(drive)); assertTrue(fresh.state.value.backupUnlocked)
+                assertFalse(fresh.state.value.automatic); assertTrue(drive.entries.isEmpty()); assertTrue(db.documents().allDocuments().isEmpty())
+                val resumed=FolioBackupRepository(backupContext,db,docs,FakeAuth(),pipeline)
+                resumed.initializeSafety(); assertTrue(resumed.state.value.backupUnlocked)
+                val id=docs.create("First backup"); resumed.execute(resumed.prepare(false),drive)
+                assertEquals(id,drive.latest().manifest.documents.single().id)
+            } finally { pipeline.close() }
+        }
+    }
+    @Test fun discoveryFailuresExistingBackupAndAccountChangesNeverUnlockFreshInstallation()=runBlocking {
+        fixture { db,docs,old,drive ->
+            docs.create("Existing backup"); old.execute(old.prepare(false),drive)
+            backupContext.getSharedPreferences("drive-backup-safety",0).edit().putBoolean("unlocked",false).commit()
+            val pipeline=ImagePipeline(context)
+            try {
+                val fresh=FolioBackupRepository(backupContext,db,docs,FakeAuth(),pipeline)
+                assertNotNull(fresh.discover(drive)); assertFalse(fresh.state.value.backupUnlocked)
+                val corrupt=object:DriveStore by drive { override suspend fun download(id:String,target:File,limit:Long) { target.writeText("invalid manifest") } }
+                try { fresh.discover(corrupt); fail("Corrupt backup treated as absence") } catch(_:org.json.JSONException) {}
+                assertFalse(fresh.state.value.backupUnlocked)
+                for(error in listOf<Exception>(IOException("Offline"),BackupAuthRequired(),DriveFailure(403,"Forbidden"),CancellationException("Cancelled"))) {
+                    val failing=object:DriveStore by drive { override suspend fun list(parent:String?,role:String,hash:String?,includeTrashed:Boolean):List<DriveFile> { if(parent==null) return drive.list(parent,role,hash,includeTrashed); throw error } }
+                    try { fresh.discover(failing); fail("Failed inspection treated as absence") } catch(actual:Exception) { assertSame(error,actual) }
+                    assertFalse(fresh.state.value.backupUnlocked)
+                }
+                val changed=object:DriveStore by drive { override suspend fun list(parent:String?,role:String,hash:String?,includeTrashed:Boolean):List<DriveFile> { fresh.connected("other@example.invalid"); return emptyList() } }
+                try { fresh.discover(changed); fail("Old-account absence unlocked new account") } catch(_:CancellationException) {}
+                assertFalse(fresh.state.value.backupUnlocked)
+                db.documents().save(BackupRecord("fixture@example.invalid:cloud-purge","","",0,1,"cloud-purged"))
+                fresh.initializeSafety(); assertFalse(fresh.state.value.backupUnlocked)
+            } finally { pipeline.close() }
+        }
+    }
     @Test fun legacyLocalDataCompletedRestoreAndConfiguredAutomaticBackupMigrateSafely()=runBlocking {
         fixture { db,docs,_,_ ->
             val prefs=backupContext.getSharedPreferences("drive-backup",0)

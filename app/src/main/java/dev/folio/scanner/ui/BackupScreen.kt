@@ -84,8 +84,8 @@ fun BackupScreen(repository:FolioBackupRepository,back:()->Unit) {
             }
             if(state.email.isNotEmpty()) {
                 HorizontalDivider()
-                if(!state.backupUnlocked) Text("Backup is locked on this installation. Restore your existing Folio backup successfully first. Signing in does not upload or replace your Drive backup.",style=MaterialTheme.typography.bodyMedium)
-                BackupToggle("Automatic backup",if(!state.backupUnlocked) "Restore first to unlock uploads" else if(cloudBlocked) "Paused by cloud deletion. Back Up Now can restart after completion." else "Upload changes in the background",state.automatic,!busy && state.backupUnlocked && !cloudBlocked) { enabled ->
+                if(!state.backupUnlocked) Text("Check for an existing Folio backup before uploading. Restore it if found; if no backup exists, uploads can be enabled. Signing in does not upload or replace your Drive backup.",style=MaterialTheme.typography.bodyMedium)
+                BackupToggle("Automatic backup",if(!state.backupUnlocked) "Check for a backup or restore first" else if(cloudBlocked) "Paused by cloud deletion. Back Up Now can restart after completion." else "Upload changes in the background",state.automatic,!busy && state.backupUnlocked && !cloudBlocked) { enabled ->
                     if(enabled) confirmation="automatic" else repository.automatic(false)
                 }
                 BackupToggle("Wi-Fi only","Wait for an unmetered connection",state.wifiOnly,!busy && !state.running,repository::wifiOnly)
@@ -99,7 +99,7 @@ fun BackupScreen(repository:FolioBackupRepository,back:()->Unit) {
                     TextButton(onClick=repository::cancel) { Text("Cancel and pause backup") }
                 } else {
                     Button(onClick={ confirmation="manual" },enabled=!busy && state.backupUnlocked && (!cloudBlocked || cloudPurge?.state=="cloud-purged"),modifier=Modifier.fillMaxWidth()) { Text("Back Up Now") }
-                    OutlinedButton(onClick={ action { preview=repository.discover(); confirmation="restore" } },enabled=!busy && !cloudBlocked,modifier=Modifier.fillMaxWidth()) { Text("Find backup to restore") }
+                    OutlinedButton(onClick={ action { preview=repository.discover(); confirmation=if(preview==null) "" else "restore" } },enabled=!busy && !cloudBlocked,modifier=Modifier.fillMaxWidth()) { Text("Find backup to restore") }
                     if(state.recoverable && !state.error.contains("Reconnect",ignoreCase=true)) TextButton(onClick={ action { withContext(Dispatchers.IO) { repository.retry() } } },enabled=!busy) { Text("Retry interrupted operation") }
                 }
                 TextButton(onClick={ confirmation="disconnect" },enabled=!busy) { Text("Disconnect Google Account") }

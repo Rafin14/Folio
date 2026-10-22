@@ -74,7 +74,7 @@ Open Folio, choose **New document**, and grant camera permission to scan. You ca
 
 Accounts without approved access cannot use Google Drive Backup. Scanning, editing, OCR and PDF tools remain available without a Google account.
 
-Backup is optional. Connecting an account does not upload your library. Automatic backup needs explicit opt-in. The current restore-first safety policy locks uploads on a fresh installation until a nonempty existing Folio backup has been restored. Read [the Drive guide](docs/GOOGLE_DRIVE_SETUP.md) before relying on backup.
+Backup is optional. Connecting an account does not upload your library. Automatic backup needs explicit opt-in. On a fresh installation, check for an existing backup before uploading. If one exists, restore it first. A verified empty account or completed cloud purge unlocks uploads; starting a new backup still requires your explicit choice. Read [the Drive guide](docs/GOOGLE_DRIVE_SETUP.md) before relying on backup.
 
 ## Built with
 
@@ -98,7 +98,7 @@ Document images and OCR stay on the device unless you explicitly share/export th
 - OCR works best with printed English. Handwriting, mathematics, other languages and complex layouts may produce inaccurate results. Check extracted text for mistakes.
 - OCR has a CPU fallback. NNAPI is requested on eligible devices; actual supported node execution varies. XNNPACK is CPU acceleration. GPU acceleration is not guaranteed.
 - Exported PDFs do not currently embed an OCR text layer. Replacing a PDF page rasterizes that selected page; its vector/text content is not retained in the replacement.
-- Drive access and the restore-first upload lock are intentional current limitations.
+- Drive access is restricted to approved test users. Existing cloud backups must be restored before uploads are unlocked on a fresh installation.
 
 ## License and acknowledgements
 

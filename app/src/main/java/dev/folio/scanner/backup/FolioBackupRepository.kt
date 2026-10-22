@@ -64,9 +64,17 @@ class FolioBackupRepository @Inject constructor(@ApplicationContext private val 
                 dao.backupRecords("restore:").any { it.state=="complete" && it.bytes>0 }
             check(safety.edit().putBoolean("unlocked",existing).commit()) { "Could not save backup safety state." }
         }
+        val email=state.value.email; val expected=epoch()
+        // Recover a verified purge even if the process stopped before updating preferences.
+        if(email.isNotEmpty() && !safety.getBoolean("unlocked",false) && dao.backupRecord(purgeKey(email))?.state=="cloud-purged") unlockBackup(expected,email)
         update { if(!safety.getBoolean("unlocked",false)) putBoolean("automatic",false) }
     }
-    private fun requireBackupUnlocked() { check(state.value.backupUnlocked) { "Restore your existing Folio backup successfully before uploading from this installation." } }
+    @Synchronized private fun unlockBackup(expected:String,email:String) {
+        currentCoroutineContextGuard(expected,email,false)
+        check(safety.edit().putBoolean("unlocked",true).commit()) { "Could not save backup safety state." }
+        update {}
+    }
+    private fun requireBackupUnlocked() { check(state.value.backupUnlocked) { "Check for an existing Folio backup first. Restore it if one is found before uploading from this installation." } }
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO+CoroutineExceptionHandler { _,error ->
         if(error !is CancellationException) failure(Exception("Local backup scheduling failed."),false)
     })
@@ -387,7 +395,7 @@ class FolioBackupRepository @Inject constructor(@ApplicationContext private val 
                 }
                 dao.save(result.copy(state="cloud-purged"))
             }
-            guard(); updateFor(expected) { putLong("lastBackup",0); putString("lastFingerprint",""); putString("status","Cloud backup purged"); putString("error",""); putBoolean("automatic",false) }
+            guard(); initializeSafety(); updateFor(expected) { putLong("lastBackup",0); putString("lastFingerprint",""); putString("status","Cloud backup purged"); putString("error",""); putBoolean("automatic",false) }
             return@withContext true
         }
         if(result.state=="purge-review") throw DriveOwnershipReview(CloudPurgeProgress.read(result).message)
@@ -429,12 +437,21 @@ class FolioBackupRepository @Inject constructor(@ApplicationContext private val 
             snapshot.pages.filter { it.page.documentId==doc.id && it.page.id in tombstones }.forEach { queueDrivePageDeletion(dao,email,it.page.id,doc.id,root) }
         }
     }
-    suspend fun discover():RestorePreview = withContext(Dispatchers.IO) {
-        val email=state.value.email; val remote=store(epoch(),email,false)
-        val roots=remote.list(null,"root"); require(roots.isNotEmpty()) { "No Folio backup was found in this account." }
-        val (root,latest)=roots.flatMap { root -> remote.list(root.id,"manifest").map { root.id to it } }.maxByOrNull { it.second.createdAt } ?: throw IllegalArgumentException("No completed Folio backup was found.")
+    suspend fun discover(provided:DriveStore?=null):RestorePreview? = withContext(Dispatchers.IO) {
+        val email=state.value.email; val expected=epoch(); require(email.isNotEmpty()) { "Connect Google Account first." }
+        val remote=provided ?: store(expected,email,false)
+        val roots=remote.list(null,"root")
+        val candidate=roots.flatMap { root -> remote.list(root.id,"manifest").map { root.id to it } }.maxByOrNull { it.second.createdAt }
+        currentCoroutineContext().ensureActive(); currentCoroutineContextGuard(expected,email,false)
+        if(candidate==null) {
+            check(!cloudBlocked(email)) { "Finish cloud deletion before checking for another backup." }
+            unlockBackup(expected,email)
+            updateFor(expected) { putString("status","No cloud backup found. Ready to back up."); putString("error","") }
+            return@withContext null
+        }
+        val (root,latest)=candidate
         val target=File(context.cacheDir,"drive-manifest-${UUID.randomUUID()}")
-        try { remote.download(latest.id,target,BackupManifest.MAX_MANIFEST_BYTES.toLong()); val bytes=target.readBytes(); RestorePreview(latest.id,sha256(bytes),BackupManifest.decode(bytes),root) }
+        try { remote.download(latest.id,target,BackupManifest.MAX_MANIFEST_BYTES.toLong()); val bytes=target.readBytes(); val manifest=BackupManifest.decode(bytes); currentCoroutineContextGuard(expected,email,false); RestorePreview(latest.id,sha256(bytes),manifest,root) }
         finally { target.delete() }
     }
     suspend fun execute(id:String,provided:DriveStore?=null,progress:suspend(Int,Int)->Unit = {_,_->}) = operationLock.withLock { withContext(Dispatchers.IO) {
