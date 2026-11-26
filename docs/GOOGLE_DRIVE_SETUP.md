@@ -2,11 +2,13 @@
 
 ## Availability
 
-Google Drive Backup is optional and currently restricted to approved Google OAuth test users. Accounts without approved access cannot connect. Scanning, editing, OCR and PDF tools work without a Google account.
+Google Drive Backup is optional. Configure a Google Cloud OAuth project for your build. If the OAuth app is in Testing, only accounts listed as test users in that project can connect. Scanning, editing, OCR and PDF tools work without a Google account.
 
 ## Connect and back up
 
-Open **Google Drive Backup** in Folio's settings and connect an eligible Google account. Complete Google's consent flow when prompted.
+Open **Settings → Backup → Google Drive Backup** and connect an eligible Google account. Complete Google's consent flow when prompted.
+
+For source builds, configure the public Web OAuth client ID as `folio.google.webClientId` in the root `local.properties`. In the same Google Cloud project, enable Drive API and register an Android OAuth client for `dev.folio.scanner` and the SHA-1 of the certificate that signs the installed APK. Use the SHA-1 from `apksigner verify --print-certs` on that APK. Debug and release builds may require separate Android clients. If the OAuth app is in Testing, add the account under Audience before it requests Drive access.
 
 Connecting an account does not upload documents. Automatic backup requires explicit opt-in.
 

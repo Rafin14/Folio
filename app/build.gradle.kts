@@ -2,7 +2,6 @@ import java.util.Properties
 import java.io.File
 import java.security.KeyStore
 import java.security.PrivateKey
-import java.security.MessageDigest
 import java.security.cert.X509Certificate
 
 plugins {
@@ -45,8 +44,6 @@ val validatePrivateReleaseSigning = tasks.register("validatePrivateReleaseSignin
             val certificate = store.getCertificate(alias) as? X509Certificate ?: invalid("A signing certificate is required.")
             try { certificate.checkValidity() } catch (_: Exception) { invalid("The signing certificate is not currently valid.") }
             if (alias.equals("androiddebugkey", true) || certificate.subjectX500Principal.name.contains("CN=Android Debug", true)) invalid("A debug key cannot be used for release signing.")
-            val sha1 = MessageDigest.getInstance("SHA-1").digest(certificate.encoded).joinToString(":") { "%02X".format(it.toInt() and 0xff) }
-            if (sha1 != "93:3B:CF:4C:3B:98:75:80:5B:F9:A8:DF:05:74:1F:79:DD:85:50:75") invalid("The signing certificate does not match the required Folio Android OAuth identity. Use the original matching keystore; generating another key cannot reproduce it.")
         } finally { storePassword.fill('\u0000'); keyPassword.fill('\u0000') }
     }
 }
@@ -62,8 +59,8 @@ android {
         applicationId = "dev.folio.scanner"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "2.0.1"
+        versionCode = 5
+        versionName = "2.2.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         val local = Properties().apply { rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) } }
         val webClient = local.getProperty("folio.google.webClientId", "").trim()

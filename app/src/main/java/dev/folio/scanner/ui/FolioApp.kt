@@ -2,75 +2,158 @@
 
 package dev.folio.scanner.ui
 
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.ScrollableState
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.lazy.grid.*
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.automirrored.outlined.TextSnippet
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.hideFromAccessibility
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.Velocity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.content.edit
 import androidx.navigation.compose.*
+import androidx.navigation.NavBackStackEntry
 import dev.folio.scanner.data.*
 import java.text.DateFormat
 import java.util.Date
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import kotlin.math.roundToInt
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+
+private const val TabMotionDuration = 280
+
+private fun AnimatedContentTransitionScope<NavBackStackEntry>.betweenTabs() =
+    setOf(initialState.destination.route, targetState.destination.route) == setOf("library", "pdf-workspace")
+
+@Composable
+private fun AnimatedVisibilityScope.tabMotion(direction: Int, sliding: Boolean): Modifier {
+    val offset = transition.animateFloat(
+        transitionSpec = { tween(if (sliding) TabMotionDuration else 0, easing = FastOutSlowInEasing) },
+        label = "Tab slide"
+    ) { state -> if (state == EnterExitState.Visible) 0f else direction * .24f }
+    return Modifier.graphicsLayer { translationX = if (sliding) size.width * offset.value else 0f }
+}
 
 @Composable
 fun FolioApp(model: LibraryViewModel) {
     val context = LocalContext.current
     val preferences = remember { context.getSharedPreferences("appearance", 0) }
     var theme by rememberSaveable { mutableStateOf(preferences.getString("theme", "System") ?: "System") }
+    var blurEnabled by rememberSaveable { mutableStateOf(preferences.getBoolean("glassBlurEnabled", true)) }
+    var blurStrength by rememberSaveable { mutableIntStateOf(preferences.getInt("glassBlurStrength", 100).coerceIn(25, 150)) }
+    var translucency by rememberSaveable { mutableIntStateOf(preferences.getInt("glassTranslucency", 50).coerceIn(0, 100)) }
     val state by model.state.collectAsStateWithLifecycle()
     val error by model.error.collectAsStateWithLifecycle()
     val busy by model.busy.collectAsStateWithLifecycle()
     val preparingPdf by model.preparingPdf.collectAsStateWithLifecycle()
     val nav = rememberNavController()
     val snack = remember { SnackbarHostState() }
+    var creating by rememberSaveable { mutableStateOf(false) }
+    var newDocumentFolder by rememberSaveable { mutableStateOf<String?>(null) }
+    fun beginDocument(folder: String?) {
+        newDocumentFolder = folder
+        creating = true
+    }
     fun openDocument(id:String,match:String="") {
         if(state.documents.find {it.id==id}?.importedPdf==true) model.run {
             val session=model.utility.openManaged(id)
             val index=if(match.isEmpty()) 0 else model.repository.dao.page(match)?.position ?: 0
-            nav.navigate("pdf-import/$session?page=$index")
+            nav.navigate("pdf-import/$session?page=$index&match=${match.isNotEmpty()}")
         } else nav.navigate(if(match.isEmpty()) "document/$id" else "document/$id?match=$match")
     }
     LaunchedEffect(error) { error?.let { snack.showSnackbar(it); model.error.value = null } }
     val entry by nav.currentBackStackEntryAsState()
+    val visibleEntries by nav.visibleEntries.collectAsStateWithLifecycle()
+    val slidingTabs = visibleEntries.size == 2 &&
+        visibleEntries.map { it.destination.route }.toSet() == setOf("library", "pdf-workspace")
     val route = entry?.destination?.route.orEmpty()
     val cameraRoute = route.startsWith("scanner/")
-    FolioTheme(theme, cameraOverlay = cameraRoute) {
+    val dockLens = androidx.compose.animation.core.animateFloatAsState(
+        if (route == "pdf-workspace") 0f else 1f,
+        tween(TabMotionDuration, easing = FastOutSlowInEasing),
+        label = "Navigation lens"
+    )
+    FolioTheme(theme, cameraOverlay = cameraRoute, blurEnabled = blurEnabled, blurStrength = blurStrength,
+        translucency = translucency) {
         // Each destination owns its system insets; nested Scaffolds must not add them twice.
         Scaffold(snackbarHost = { SnackbarHost(snack,Modifier.navigationBarsPadding()) }, contentWindowInsets = WindowInsets(0,0,0,0)) { outer ->
             Box(Modifier.fillMaxSize().padding(outer)) {
-                NavHost(nav, "library", enterTransition={ androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(160)) },
-                    exitTransition={ androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(100)) },
-                    popEnterTransition={ androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(160)) },
-                    popExitTransition={ androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(100)) }) {
-                    composable("library",exitTransition={ if(targetState.destination.route=="pdf-workspace") androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(220)) { it } else androidx.compose.animation.fadeOut() },popEnterTransition={ if(initialState.destination.route=="pdf-workspace") androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(220)) { it } else androidx.compose.animation.fadeIn() }) {
-                        LibraryScreen(state, busy, model, open = { openDocument(it) }, settings = { nav.navigate("settings") }, recycle = { nav.navigate("recycle") }, openPage={ doc,page -> openDocument(doc,page) },text={ nav.navigate("text/$it") }, workspace={ nav.navigate("pdf-workspace") }, importedPdf={ nav.navigate("pdf-import/$it") },review={ doc,draft -> nav.navigate("document/$doc"); nav.navigate("scan-edit/$draft") })
+                NavHost(nav, "library", enterTransition={ fadeIn(tween(if (betweenTabs()) TabMotionDuration else 180)) },
+                    exitTransition={ fadeOut(tween(if (betweenTabs()) TabMotionDuration else 130)) },
+                    popEnterTransition={ fadeIn(tween(if (betweenTabs()) TabMotionDuration else 180)) },
+                    popExitTransition={ fadeOut(tween(if (betweenTabs()) TabMotionDuration else 130)) }) {
+                    composable("library") {
+                        LibraryScreen(state, busy, model, open = { openDocument(it) }, settings = { nav.navigate("settings") }, recycle = { nav.navigate("recycle") }, openPage={ doc,page -> openDocument(doc,page) },text={ nav.navigate("text/$it") }, workspace={ nav.navigate("pdf-workspace") { launchSingleTop = true } }, importedPdf={ nav.navigate("pdf-import/$it") },review={ doc,draft -> nav.navigate("document/$doc"); nav.navigate("scan-edit/$draft") }, creating=creating, create=::beginDocument, dockLens=dockLens, motion=tabMotion(1, slidingTabs))
                     }
                     composable("recycle") { RecycleBinScreen(model) { nav.popBackStack() } }
                     composable("document/{id}?match={match}", arguments=listOf(androidx.navigation.navArgument("match") { defaultValue="" })) { entry ->
@@ -97,21 +180,42 @@ fun FolioApp(model: LibraryViewModel) {
                         ScannerScreen(requireNotNull(entry.arguments?.getString("id")), model, { nav.popBackStack() }, { draft -> nav.navigate("scan-edit/$draft") }, entry.arguments?.getString("replace"))
                     }
                     composable("settings") {
-                        SettingsScreen(theme, { theme = it; preferences.edit { putString("theme", it) } }, { nav.popBackStack() }, { nav.navigate("drive-backup") }, { nav.navigate("ocr-settings") })
+                        SettingsScreen(theme, { theme = it; preferences.edit { putString("theme", it) } },
+                            { nav.popBackStack() }, { nav.navigate("backup") }, { nav.navigate("ocr-settings") },
+                            setBlur = { blurEnabled = it; preferences.edit { putBoolean("glassBlurEnabled", it) } },
+                            setBlurStrength = { blurStrength = it; preferences.edit { putInt("glassBlurStrength", it) } },
+                            setTranslucency = { translucency = it; preferences.edit { putInt("glassTranslucency", it) } })
                     }
+                    composable("backup") { BackupHome({ nav.popBackStack() }, { nav.navigate("local-backup") }, { nav.navigate("drive-backup") }) }
+                    composable("local-backup") { LocalBackupScreen(model) { nav.popBackStack() } }
                     composable("drive-backup") { BackupScreen(model.backups) { nav.popBackStack() } }
                     composable("text/{id}") { entry -> ExtractedTextScreen(requireNotNull(entry.arguments?.getString("id")),null,model) { nav.popBackStack() } }
                     composable("ocr-settings") { OcrSettingsScreen(model) { nav.popBackStack() } }
-                    composable("pdf-workspace",enterTransition={ androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(220)) { -it } },popExitTransition={ androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(220)) { -it } }) {
-                        PdfWorkspace(null, model, { nav.popBackStack() }, { nav.navigate("pdf/$it") })
+                    composable("pdf-workspace") {
+                        PdfWorkspace(null, model, { nav.popBackStack() }, { nav.navigate("pdf/$it") },
+                            libraryDock = { nav.popBackStack("library", false) }, dockLens = dockLens,
+                            motion = tabMotion(-1, slidingTabs))
                     }
-                    composable("pdf-import/{session}?page={page}",arguments=listOf(androidx.navigation.navArgument("page") {type=androidx.navigation.NavType.IntType;defaultValue=0})) { entry ->
-                        PdfWorkspace(null,model,{ nav.popBackStack() },{},initialSession=entry.arguments!!.getString("session").orEmpty(),importIntoFolio=true,initialPage=entry.arguments!!.getInt("page"))
+                    composable("pdf-import/{session}?page={page}&match={match}",arguments=listOf(
+                        androidx.navigation.navArgument("page") {type=androidx.navigation.NavType.IntType;defaultValue=0},
+                        androidx.navigation.navArgument("match") {type=androidx.navigation.NavType.BoolType;defaultValue=false}
+                    )) { entry ->
+                        PdfWorkspace(null,model,{ nav.popBackStack() },{},initialSession=entry.arguments!!.getString("session").orEmpty(),
+                            importIntoFolio=true,initialPage=entry.arguments!!.getInt("page"),
+                            initialSearchMatch=entry.arguments!!.getBoolean("match"))
                     }
 
                 }
+                if (creating) NameDialog("New document", "Document name", "", busy, { creating = false }, creation = true,
+                    validate = { documentNameConflict(it, state.documents) }) { name ->
+                    model.run {
+                        val id = model.repository.create(name, newDocumentFolder)
+                        creating = false
+                        openDocument(id)
+                    }
+                }
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
-                if (preparingPdf) AlertDialog(onDismissRequest = model::cancelPdfPreparation, title = { Text("Preparing PDF inputs") }, text = {
+                if (preparingPdf) FolioDialog(onDismissRequest = model::cancelPdfPreparation, title = { Text("Preparing PDF inputs") }, text = {
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) { Text("Saving safe copies of selected pages before background processing."); LinearProgressIndicator(Modifier.fillMaxWidth()) }
                 }, confirmButton = { TextButton(onClick = model::cancelPdfPreparation) { Text("Cancel PDF preparation") } })
             }
@@ -119,8 +223,9 @@ fun FolioApp(model: LibraryViewModel) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun LibraryScreen(state: LibraryState, busy: Boolean, model: LibraryViewModel, open: (String) -> Unit, settings: () -> Unit, recycle: () -> Unit,openPage:(String,String)->Unit,text:(String)->Unit, workspace:()->Unit,importedPdf:(String)->Unit,review:(String,String)->Unit) {
+private fun LibraryScreen(state: LibraryState, busy: Boolean, model: LibraryViewModel, open: (String) -> Unit, settings: () -> Unit, recycle: () -> Unit,openPage:(String,String)->Unit,text:(String)->Unit, workspace:()->Unit,importedPdf:(String)->Unit,review:(String,String)->Unit,creating:Boolean,create:(String?)->Unit,dockLens:State<Float>,motion:Modifier) {
     var selection by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var query by rememberSaveable { mutableStateOf("") }
     var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -137,7 +242,7 @@ private fun LibraryScreen(state: LibraryState, busy: Boolean, model: LibraryView
         }
     }
     val prefs = remember { context.getSharedPreferences("appearance",0) }
-    var grid by rememberSaveable { mutableStateOf(prefs.getBoolean("libraryGrid",true)) }
+    var grid by rememberSaveable { mutableStateOf(prefs.getBoolean("libraryGrid",false)) }
     var searching by rememberSaveable { mutableStateOf(false) }
     val focus = LocalFocusManager.current
     fun leaveSearch() { query=""; searching=false; focus.clearFocus() }
@@ -152,8 +257,11 @@ private fun LibraryScreen(state: LibraryState, busy: Boolean, model: LibraryView
         onPauseOrDispose { if(android.os.Build.VERSION.SDK_INT>=33 && callback!=null) dispatcher?.unregisterOnBackInvokedCallback(callback) }
     }
     var sort by rememberSaveable { mutableStateOf("Modified") }
+    var datePickerOpen by rememberSaveable { mutableStateOf(false) }
+    var filterDate by rememberSaveable { mutableStateOf<Long?>(null) }
+    var filterCreated by rememberSaveable { mutableStateOf(false) }
+    val filterDay = filterDate?.let { Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate() }
     var sortMenu by remember { mutableStateOf(false) }
-    var create by remember { mutableStateOf(false) }
     var newFolder by remember { mutableStateOf(false) }
     var folderAction by remember { mutableStateOf<Folder?>(null) }
     var renameFolder by remember { mutableStateOf<Folder?>(null) }
@@ -161,7 +269,21 @@ private fun LibraryScreen(state: LibraryState, busy: Boolean, model: LibraryView
     var selectionShare by rememberSaveable { mutableStateOf(false) }
     var selectionDelete by rememberSaveable { mutableStateOf(false) }
     fun toggle(id:String) { selection=if(id in selection) selection-id else selection+id }
-    fun click(doc:Document) { if(selection.isNotEmpty()) toggle(doc.id) else open(doc.id) }
+    val keyboard = LocalSoftwareKeyboardController.current
+    fun dismissSearchKeyboard() {
+        if (activeSearch) {
+            focus.clearFocus()
+            keyboard?.hide()
+        }
+    }
+    fun click(doc:Document) {
+        if (selection.isNotEmpty()) toggle(doc.id)
+        else { dismissSearchKeyboard(); open(doc.id) }
+    }
+    fun openMatch(hit: dev.folio.scanner.ocr.OcrSearchHit) {
+        dismissSearchKeyboard()
+        openPage(hit.documentId, hit.pageId)
+    }
     LaunchedEffect(state.documents,state.loading) { if(!state.loading) selection=selection.filter { id -> state.documents.any { it.id==id } } }
     androidx.activity.compose.BackHandler(selection.isNotEmpty()) { selection=emptyList() }
 
@@ -171,116 +293,426 @@ private fun LibraryScreen(state: LibraryState, busy: Boolean, model: LibraryView
     val expression=dev.folio.scanner.ocr.searchExpression(query)
     val recognizing by remember { model.repository.dao.observePendingOcrCount() }.collectAsStateWithLifecycle(0)
     val hits by remember(expression,query) { if(expression.isBlank()) kotlinx.coroutines.flow.flowOf(emptyList()) else model.repository.dao.searchOcr(expression,query.trim()) }.collectAsStateWithLifecycle(emptyList())
-    val visibleHits=hits.filter { hit -> state.documents.any { it.id==hit.documentId && (tab!=1 || it.favorite) && (folder==null || it.folderId==folder) } }
-    val docs = state.documents.filter { doc ->
-        doc.title.contains(query, ignoreCase = true) && (tab != 1 || doc.favorite) && (folder == null || doc.folderId == folder)
-    }.let { if (tab == 3) it.sortedByDescending { row -> row.modifiedAt }.take(20) else it }.let { rows -> when (sort) {
-        "Name" -> rows.sortedBy { it.title.lowercase() }
-        "Created" -> rows.sortedByDescending { it.createdAt }
-        else -> rows.sortedByDescending { it.modifiedAt }
-    } }
-    val keyboardOpen=WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current)>0
-    Scaffold(modifier=Modifier.imePadding(),topBar = {
-        if(selection.isNotEmpty()) Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically) {
-            IconButton(onClick={ selection=emptyList() }) { Icon(Icons.Outlined.Close,"Cancel document selection") }
-            Text("${selection.size} selected",Modifier.weight(1f),style=MaterialTheme.typography.titleMedium)
-            IconButton(onClick={ selectionShare=true }) { Icon(Icons.Outlined.Share,"Share selected documents") }
-            IconButton(onClick={ selectionDelete=true }) { Icon(Icons.Outlined.Delete,"Delete selected documents") }
-            IconButton(onClick={ selection=docs.map { it.id } }) { Icon(Icons.Outlined.SelectAll,"Select all documents") }
-        } else if(keyboardOpen) Spacer(Modifier.statusBarsPadding().height(4.dp)) else
-        Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(painterResource(dev.folio.scanner.R.drawable.ic_folio_mark), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp))
-            Spacer(Modifier.width(10.dp))
-            Text("Folio", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-            IconButton(onClick = recycle) { Icon(Icons.Outlined.DeleteOutline, "Recycle Bin") }
-            IconButton(onClick = settings) { Icon(Icons.Outlined.Settings, "Settings") }
+    val dateWindow = filterDay?.let { day ->
+        val zone = ZoneId.systemDefault()
+        day.atStartOfDay(zone).toInstant().toEpochMilli() until day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+    }
+    val eligible = state.documents.filter { doc ->
+        (tab != 1 || doc.favorite) && (folder == null || doc.folderId == folder) &&
+            (dateWindow == null || (if (filterCreated) doc.createdAt else doc.modifiedAt) in dateWindow)
+    }
+    val eligibleIds = eligible.mapTo(hashSetOf()) { it.id }
+    val visibleHits = if (expression.isBlank()) emptyList() else hits.filter { it.documentId in eligibleIds }
+    val matching = eligible.filter { it.title.contains(query, ignoreCase = true) }
+    val recent = if (tab == 3) matching.sortedByDescending { it.modifiedAt }.sortedByDescending { it.favorite }.take(20) else matching
+    val docs = when (sort) {
+        "Name" -> recent.sortedBy { it.title.lowercase() }
+        "Created" -> recent.sortedByDescending { it.createdAt }
+        else -> recent.sortedByDescending { it.modifiedAt }
+    }.sortedByDescending { it.favorite }
+    fun changeLayout(asGrid: Boolean) {
+        grid = asGrid
+        prefs.edit { putBoolean("libraryGrid", asGrid) }
+    }
+    val listState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
+    val searchFocus = remember { FocusRequester() }
+    var revealSearch by remember { mutableStateOf(false) }
+    var headerProgress by remember { mutableFloatStateOf(0f) }
+    var searchHeight by remember { mutableIntStateOf(0) }
+    var detailsHeight by remember { mutableIntStateOf(0) }
+    val headerScope = rememberCoroutineScope()
+    var settlingHeader by remember { mutableStateOf<Job?>(null) }
+    fun settleHeader(target: Float) {
+        settlingHeader?.cancel()
+        if (headerProgress == target) return
+        settlingHeader = headerScope.launch {
+            animate(headerProgress, target, animationSpec = tween(180, easing = FastOutSlowInEasing)) { value, _ ->
+                headerProgress = value
+            }
         }
-    }, bottomBar = {
-        if(!keyboardOpen && selection.isEmpty()) Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal=16.dp,vertical=8.dp)) {
-        OutlinedButton(onClick={ importer.launch(arrayOf("image/*","application/pdf")) },enabled=!busy,modifier=Modifier.fillMaxWidth()) { Icon(Icons.Outlined.FileOpen,null); Spacer(Modifier.width(8.dp)); Text("Import") }
-        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-            FilledTonalButton(onClick=workspace,shape=MaterialTheme.shapes.large,modifier=Modifier.weight(1f).heightIn(min=56.dp)) { Icon(Icons.Outlined.PictureAsPdf,null); Spacer(Modifier.width(8.dp)); Text("PDF workspace",maxLines=2) }
-            ExtendedFloatingActionButton(onClick={ create=true },icon={ Icon(Icons.Outlined.CameraAlt,null) },text={ Text("New document") },modifier=Modifier.weight(1f).semantics { contentDescription="New document" })
-        } }
-    }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).workspaceSwipe(!busy && selection.isEmpty() && !activeSearch && !create && importUris.isEmpty() && selected==null && !newFolder,true,workspace).padding(horizontal = 16.dp).onPreInterceptKeyBeforeSoftKeyboard { event ->
-            if(activeSearch && event.key==Key.Back) { if(event.type==KeyEventType.KeyUp) leaveSearch(); true } else false
-        }) {
-            if(!keyboardOpen && query.isNotBlank() && recognizing>0) Text("$recognizing pages still recognizing text…",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-            OutlinedTextField(query, { query = it }, placeholder = { Text("Search documents") }, leadingIcon = { Icon(Icons.Outlined.Search, null) },
-                trailingIcon = { Row {
-                    if(keyboardOpen) IconButton(onClick={ grid=!grid; prefs.edit { putBoolean("libraryGrid",grid) } }) { Icon(if(grid) Icons.AutoMirrored.Filled.List else Icons.Outlined.GridView,if(grid) "List view" else "Grid view") }
-                    if(searching || query.isNotEmpty()) IconButton(onClick=::leaveSearch) { Icon(Icons.Outlined.Close,"Close search") }
-                } },
-                keyboardOptions=androidx.compose.foundation.text.KeyboardOptions(imeAction=androidx.compose.ui.text.input.ImeAction.Search),
-                keyboardActions=androidx.compose.foundation.text.KeyboardActions(onSearch={ focus.clearFocus() }),
-                singleLine = true, modifier = Modifier.fillMaxWidth().onFocusChanged { if(it.isFocused) searching=true }, shape = RoundedCornerShape(12.dp))
-            Spacer(Modifier.height(if(keyboardOpen) 4.dp else 16.dp))
-            if(!keyboardOpen) Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("All documents", "Favorites", "Folders", "Recent").forEachIndexed { index, label ->
-                    FilterChip(selected = tab == index, onClick = { tab = index; folder = null }, label = { Text(label) })
+    }
+    fun resetDocumentScroll() {
+        settleHeader(0f)
+        listState.requestScrollToItem(0)
+        gridState.requestScrollToItem(0)
+    }
+    var revealPinned by remember { mutableStateOf<String?>(null) }
+    fun star(doc: Document) { model.run {
+        model.repository.favorite(doc.id)
+        if (!doc.favorite) revealPinned = doc.id
+    } }
+    LaunchedEffect(revealPinned, docs, state.documents, grid) {
+        val id = revealPinned ?: return@LaunchedEffect
+        val index = docs.indexOfFirst { it.id == id && it.favorite }
+        if (index >= 0) {
+            if (grid) gridState.scrollToItem(index) else listState.scrollToItem(index)
+        }
+        if (state.documents.any { it.id == id && it.favorite }) revealPinned = null
+    }
+    fun actions(doc: Document) { if (selection.isEmpty()) selected = doc else toggle(doc.id) }
+    fun hold(doc: Document) { toggle(doc.id); focus.clearFocus() }
+    val density = LocalDensity.current
+    val ime = WindowInsets.ime
+    val imeStart = WindowInsets.imeAnimationSource
+    val imeEnd = WindowInsets.imeAnimationTarget
+    fun keyboardProgress(): Float {
+        val current = ime.getBottom(density)
+        val full = maxOf(current, imeStart.getBottom(density), imeEnd.getBottom(density))
+        return if (full == 0) 0f else current.toFloat() / full
+    }
+    val keyboardOpen by remember(ime, imeEnd, density) {
+        derivedStateOf { ime.getBottom(density) > 0 || imeEnd.getBottom(density) > 0 }
+    }
+    val browseSemantics = if (keyboardOpen) Modifier.clearAndSetSemantics {} else Modifier
+    val closeSearchFraction = animateFloatAsState(
+        if (activeSearch) 1f else 0f, tween(150, easing = FastOutSlowInEasing), label = "Close search action"
+    )
+    val foldGlassWeight = remember { {
+        // Fade to the surface tint while the header changes height, then resume live sampling.
+        val edgeDistance = minOf(headerProgress, 1f - headerProgress)
+        (1f - edgeDistance / .18f).coerceIn(0f, 1f)
+    } }
+    val backdrop = rememberDockBackdrop(true, sampleScale = .5f, sampleWeight = foldGlassWeight)
+    val haptic = LocalHapticFeedback.current
+    val canCompact = docs.isNotEmpty() && tab != 2 && selection.isEmpty() && !revealSearch && !activeSearch && !keyboardOpen && filterDay == null
+    var toolbarHeight by remember { mutableIntStateOf(0) }
+    var tabsHeight by remember { mutableIntStateOf(0) }
+    val headerState by remember {
+        derivedStateOf {
+            when (headerProgress) {
+                0f -> "Expanded"
+                1f -> "Compact"
+                else -> "Transitioning"
+            }
+        }
+    }
+    val compactHeader = headerState == "Compact"
+    val currentScroll by rememberUpdatedState<ScrollableState>(if (grid) gridState else listState)
+    val compactOnScroll by rememberUpdatedState(canCompact)
+    LaunchedEffect(canCompact) { if (!canCompact) settleHeader(0f) }
+    val headerScroll = remember {
+        object : NestedScrollConnection {
+            private fun consume(delta: Float): Offset {
+                val height = searchHeight + detailsHeight
+                if (height == 0) return Offset.Zero
+                val previous = headerProgress
+                headerProgress = (previous - delta / height).coerceIn(0f, 1f)
+                return Offset(0f, ((previous - headerProgress) * height).coerceIn(minOf(delta, 0f), maxOf(delta, 0f)))
+            }
+
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source == NestedScrollSource.UserInput && available.y != 0f && compactOnScroll) settlingHeader?.cancel()
+                if (!compactOnScroll || available.y >= -kotlin.math.abs(available.x)) return Offset.Zero
+                return consume(available.y)
+            }
+
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset =
+                if (compactOnScroll && available.y > 0f && !currentScroll.canScrollBackward) consume(available.y)
+                else Offset.Zero
+
+            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+                if (compactOnScroll && headerProgress > 0f && headerProgress < 1f) {
+                    settleHeader(if (headerProgress >= .5f) 1f else 0f)
+                }
+                return Velocity.Zero
+            }
+        }
+    }
+    fun importDocuments() {
+        haptic.performHapticFeedback(HapticFeedbackType.VirtualKey)
+        importer.launch(arrayOf("image/*", "application/pdf"))
+    }
+    val direction = androidx.compose.ui.platform.LocalLayoutDirection.current
+    Scaffold(
+        modifier = Modifier.workspaceSwipe(
+            !busy && selection.isEmpty() && !activeSearch && !creating && importUris.isEmpty() &&
+                selected == null && !newFolder && !datePickerOpen, true, workspace
+        ).onPreInterceptKeyBeforeSoftKeyboard { event ->
+            if (activeSearch && event.key == Key.Back) {
+                if (event.type == KeyEventType.KeyUp) leaveSearch()
+                true
+            } else false
+        },
+        topBar = {
+            val shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp)
+            FolioGlassSurface(motion.fillMaxWidth().testTag("library-header").semantics {
+                stateDescription = headerState
+            }, backdrop, shape = shape, raised = false, tintOpacity = .63f, showRim = false, sampleScale = 1f) {
+                Column(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))) {
+                    if(selection.isNotEmpty()) Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically) {
+                        IconButton(onClick={ selection=emptyList() }) { Icon(Icons.Outlined.Close,"Cancel document selection") }
+                        Text("${selection.size} selected",Modifier.weight(1f),style=MaterialTheme.typography.titleMedium)
+                        IconButton(onClick={ selectionShare=true }) { Icon(Icons.Outlined.Share,"Share selected documents") }
+                        IconButton(onClick={ selectionDelete=true }) { Icon(Icons.Outlined.Delete,"Delete selected documents") }
+                    } else Row(Modifier.fillMaxWidth().onSizeChanged { toolbarHeight = it.height }
+                        .statusBarsPadding().revealHeaderSize { 1f - keyboardProgress() }
+                        .then(browseSemantics)
+                        .padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(painterResource(dev.folio.scanner.R.drawable.ic_folio_mark), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Text("Folio", style = MaterialTheme.typography.headlineSmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.SansSerif),
+                            fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f),
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        val toolbarBorder = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .82f))
+                        val toolbarFill = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = .44f)
+                        val toolbarIconColors = IconButtonDefaults.outlinedIconButtonColors(containerColor = toolbarFill)
+                        IconButton(onClick = { revealSearch = true }, enabled = compactHeader,
+                            modifier = Modifier.revealHeaderSize(horizontal = true) { headerProgress }) {
+                            Icon(Icons.Outlined.Search, "Open Library search")
+                        }
+                        OutlinedButton(enabled = !busy, shape = MaterialTheme.shapes.medium, border = toolbarBorder, onClick = ::importDocuments,
+                            colors = ButtonDefaults.outlinedButtonColors(containerColor = toolbarFill,
+                            contentColor = MaterialTheme.colorScheme.onSurface), contentPadding = PaddingValues(horizontal = 10.dp)) {
+                            Icon(Icons.Outlined.FileOpen, if (compactHeader) "Import" else null, Modifier.size(20.dp))
+                            Box(Modifier.revealHeaderSize(horizontal = true) { 1f - headerProgress }.padding(start = 4.dp)) {
+                                Text("Import", maxLines = 1, softWrap = false)
+                            }
+                        }
+                        Spacer(Modifier.width(4.dp))
+                        OutlinedIconButton(onClick = recycle, shape = MaterialTheme.shapes.medium, border = toolbarBorder, colors = toolbarIconColors) {
+                            Icon(Icons.Outlined.DeleteOutline, "Recycle Bin", Modifier.size(20.dp))
+                        }
+                        OutlinedIconButton(onClick = settings, shape = MaterialTheme.shapes.medium, border = toolbarBorder, colors = toolbarIconColors) {
+                            Icon(Icons.Outlined.Settings, "Settings", Modifier.size(20.dp))
+                        }
+                    }
+                    Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp)) {
+                        Column(Modifier.fillMaxWidth().revealHeaderSize { 1f - headerProgress }
+                            .onSizeChanged { searchHeight = it.height }.padding(top = 4.dp)
+                            .then(if (compactHeader) Modifier.semantics { hideFromAccessibility() } else Modifier)) {
+                                OutlinedTextField(query, { query = it }, placeholder = { Text("Search documents") }, leadingIcon = { Icon(Icons.Outlined.Search, null) },
+                                    trailingIcon = { Row {
+                                        IconButton(onClick=::leaveSearch, enabled = activeSearch,
+                                            modifier = Modifier.revealHeaderSize(horizontal = true) { closeSearchFraction.value }) {
+                                            Icon(Icons.Outlined.Close, if (activeSearch) "Close search" else null)
+                                        }
+                                        IconButton(onClick = {
+                                            if (keyboardOpen) changeLayout(!grid)
+                                            else { focus.clearFocus(); datePickerOpen = true }
+                                        }, modifier = Modifier.semantics {
+                                            contentDescription = if (!keyboardOpen) "Filter by date" else if (grid) "List view" else "Grid view"
+                                        }) {
+                                            Crossfade(keyboardOpen, animationSpec = tween(120), label = "Search tool") { typing ->
+                                                if (typing) Icon(if (grid) Icons.AutoMirrored.Filled.List else Icons.Outlined.GridView,
+                                                    null)
+                                                else Icon(Icons.Outlined.Tune, null,
+                                                    tint = if (filterDay != null) MaterialTheme.colorScheme.primary else LocalContentColor.current)
+                                            }
+                                        }
+                                    } },
+                                    keyboardOptions=androidx.compose.foundation.text.KeyboardOptions(imeAction=androidx.compose.ui.text.input.ImeAction.Search),
+                                    keyboardActions=androidx.compose.foundation.text.KeyboardActions(onSearch={ focus.clearFocus() }),
+                                    enabled = !compactHeader, singleLine = true, modifier = Modifier.fillMaxWidth().focusRequester(searchFocus).onFocusChanged { if(it.isFocused) searching=true }, shape = androidx.compose.foundation.shape.CircleShape,
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = .80f),
+                                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+                                    ))
+                                if (query.isNotBlank() && recognizing > 0) {
+                                    Text("$recognizing pages still recognizing text…", style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                LaunchedEffect(revealSearch, headerState) {
+                                    if (revealSearch && !compactHeader) {
+                                        searchFocus.requestFocus()
+                                        revealSearch = false
+                                    }
+                                }
+                        }
+                            BoxWithConstraints(Modifier.fillMaxWidth().onSizeChanged { tabsHeight = it.height }
+                                .revealHeaderSize { 1f - keyboardProgress() }
+                                .then(browseSemantics).padding(top = 8.dp)) {
+                                val fitPrimaryTabs = maxWidth >= 328.dp && androidx.compose.ui.platform.LocalDensity.current.fontScale <= 1.15f
+                                val tabWidth = maxWidth - 16.dp
+                                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    listOf("All documents", "Favorites", "Folders", "Recent").forEachIndexed { index, label ->
+                                        val colors = MaterialTheme.colorScheme
+                                        val active = tab == index
+                                        val tabShape = MaterialTheme.shapes.medium
+                                        Surface(
+                                            modifier = Modifier.heightIn(min = 44.dp).then(
+                                                if (fitPrimaryTabs && index < 3) Modifier.width(tabWidth * listOf(.405f, .31f, .285f)[index])
+                                                else Modifier
+                                            ).clip(tabShape).selectable(active, role = Role.Tab, onClick = { tab = index; folder = null }),
+                                            shape = tabShape,
+                                            color = if (active) colors.primaryContainer else colors.surfaceContainerHigh.copy(alpha = .34f),
+                                            contentColor = if (active) colors.onPrimaryContainer else colors.onSurface,
+                                            border = BorderStroke(1.dp, if (active) colors.primary.copy(alpha = .44f) else colors.outlineVariant)
+                                        ) {
+                                            Row(Modifier.heightIn(min = 44.dp).padding(horizontal = 8.dp),
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                                                verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(listOf(Icons.Outlined.Description, Icons.Outlined.StarBorder,
+                                                    Icons.Outlined.Folder, Icons.Outlined.Schedule)[index], null, Modifier.size(18.dp))
+                                                Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Column(Modifier.fillMaxWidth().revealHeaderSize { (1f - headerProgress) * (1f - keyboardProgress()) }
+                                .then(browseSemantics)
+                                .onSizeChanged { detailsHeight = it.height }.padding(top = 8.dp)
+                                .then(if (compactHeader) Modifier.semantics { hideFromAccessibility() } else Modifier),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (tab == 2) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("Folders", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                                    TextButton(onClick = { newFolder = true }) { Text("New folder") }
+                                }
+                                else {
+                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(state.folders.find { it.id == folder }?.name ?: if (tab == 1) "Favorites" else "Documents",
+                                                maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleLarge,
+                                                fontWeight = FontWeight.SemiBold)
+                                            val pages = docs.sumOf { it.pageCount }
+                                            Text("${docs.size} ${if (docs.size == 1) "document" else "documents"} · $pages ${if (pages == 1) "page" else "pages"}",
+                                                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                        FolioGlassSurface(Modifier.width(100.dp), shape = MaterialTheme.shapes.medium, raised = false) {
+                                            Row(Modifier.fillMaxWidth().selectableGroup()) {
+                                                listOf(false, true).forEach { asGrid ->
+                                                    val label = if (asGrid) "Grid" else "List"
+                                                    val active = grid == asGrid
+                                                    Box(Modifier.weight(1f).height(48.dp).clip(MaterialTheme.shapes.medium)
+                                                        .selectable(active, role = Role.Tab, onClick = { changeLayout(asGrid) }),
+                                                        contentAlignment = Alignment.Center) {
+                                                        if (active) Box(Modifier.matchParentSize().padding(2.dp)
+                                                            .background(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.shapes.medium))
+                                                        Icon(if (asGrid) Icons.Outlined.GridView else Icons.AutoMirrored.Filled.List,
+                                                            if (active) "$label layout selected" else "$label view", Modifier.size(20.dp))
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if (filterDay != null) {
+                                        InputChip(
+                                            selected = true, onClick = { filterDate = null; resetDocumentScroll() },
+                                            label = { Text("${if (filterCreated) "Created" else "Modified"} · ${filterDay.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM))}") },
+                                            leadingIcon = { Icon(Icons.Outlined.CalendarToday, null, Modifier.size(16.dp)) },
+                                            trailingIcon = { Icon(Icons.Outlined.Close, "Clear date filter", Modifier.size(16.dp)) }
+                                        )
+                                    }
+                                    FolioGlassSurface(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.medium, raised = false) {
+                                        Row(Modifier.fillMaxWidth().padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Box {
+                                                OutlinedButton(onClick = { sortMenu = true }, shape = MaterialTheme.shapes.medium,
+                                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                                    colors = ButtonDefaults.outlinedButtonColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = .45f),
+                                                        contentColor = MaterialTheme.colorScheme.onSurface),
+                                                    contentPadding = PaddingValues(horizontal = 11.dp)) {
+                                                    Text(sort)
+                                                    Spacer(Modifier.width(4.dp))
+                                                    Icon(if (sort == "Name") Icons.Outlined.ArrowUpward else Icons.Outlined.ArrowDownward, null, Modifier.size(16.dp))
+                                                }
+                                                DropdownMenu(sortMenu, { sortMenu = false }, shape = MaterialTheme.shapes.large,
+                                                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                                                    listOf("Modified", "Created", "Name").forEach { label ->
+                                                        DropdownMenuItem(text = { Text(label) }, onClick = {
+                                                            sort = label
+                                                            sortMenu = false
+                                                            resetDocumentScroll()
+                                                        })
+                                                    }
+                                                }
+                                            }
+                                            if (folder != null) TextButton(onClick = { folder = null }) { Text("Show all") }
+                                            Spacer(Modifier.weight(1f))
+                                            Checkbox(
+                                                checked = docs.isNotEmpty() && docs.all { it.id in selection },
+                                                onCheckedChange = { checked -> selection = if (checked) docs.map { it.id } else emptyList() },
+                                                enabled = docs.isNotEmpty(),
+                                                modifier = Modifier.semantics { contentDescription = "Select all documents" }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                    }
                 }
             }
-            if (tab == 2) {
-                if(!keyboardOpen) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Folders", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { newFolder = true }) { Text("New folder") }
+        },
+        bottomBar = {
+            Box(Modifier.navigationBarsPadding()) {
+                if (selection.isEmpty()) Box(Modifier.revealHeaderSize { 1f - keyboardProgress() }.then(browseSemantics)) {
+                    FolioDock(false, !busy, backdrop, dockLens, library = {}, workspace = workspace, newDocument = { create(folder) })
                 }
-                LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 100.dp)) {
+            }
+        }
+    ) { padding ->
+        // Keep the lazy grid measured against the compact header during a drag. Its layer follows the fold.
+        val moveContent = canCompact && toolbarHeight > 0 && tabsHeight > 0
+        val compactTop = with(density) { (toolbarHeight + tabsHeight).toDp() } + 8.dp
+        val listPadding = remember(padding, moveContent, compactTop) {
+            object : PaddingValues {
+                override fun calculateTopPadding() = (if (moveContent) compactTop else padding.calculateTopPadding()) + 8.dp
+                override fun calculateBottomPadding() = padding.calculateBottomPadding() + 12.dp
+                override fun calculateLeftPadding(layoutDirection: LayoutDirection) = 0.dp
+                override fun calculateRightPadding(layoutDirection: LayoutDirection) = 0.dp
+            }
+        }
+        val dockInsets = remember(padding) {
+            object : PaddingValues by PaddingValues() {
+                override fun calculateBottomPadding() = padding.calculateBottomPadding()
+            }
+        }
+        Column(Modifier.fillMaxSize().consumeWindowInsets(dockInsets).imePadding()
+            .nestedScroll(headerScroll).clipToBounds().then(backdrop?.source ?: Modifier)
+            .graphicsLayer {
+                translationY = if (moveContent) (1f - headerProgress) * (searchHeight + detailsHeight) else 0f
+            }.then(motion).padding(
+            start = padding.calculateStartPadding(direction) + 16.dp,
+            end = padding.calculateEndPadding(direction) + 16.dp
+        )) {
+            if (tab == 2) {
+                LazyColumn(Modifier.weight(1f), contentPadding = listPadding) {
                     items(state.folders.filter { it.name.contains(query, true) }, key = { it.id }) { item ->
                         ListItem(headlineContent = { Text(item.name) }, leadingContent = { Icon(Icons.Outlined.Folder, null) },
                             supportingContent = { Text("${state.documents.count { it.folderId == item.id }} documents") },
-                            trailingContent = { IconButton(onClick = { folderAction = item }) { Icon(Icons.Outlined.MoreVert, "Folder actions for ${item.name}") } },
+                            trailingContent = { FolioOverflowButton("Folder actions for ${item.name}", { folderAction = item }) },
                             modifier = Modifier.clickable { folder = item.id; tab = 0 })
                     }
                     if (state.folders.isEmpty()) item { EmptyState(Icons.Outlined.Folder, "A place for everything", "Create folders for receipts, study notes, or work.") }
                 }
             } else {
-                if(!keyboardOpen) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(state.folders.find { it.id == folder }?.name ?: if (tab == 1) "Favorites" else "Documents", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                    if (folder != null) TextButton(onClick = { folder = null }) { Text("Show all") }
-                    Box {
-                        TextButton(onClick = { sortMenu = true }) { Text(sort); Icon(Icons.Outlined.ExpandMore, null) }
-                        DropdownMenu(sortMenu, { sortMenu = false }) {
-                            listOf("Modified", "Created", "Name").forEachIndexed { index, label -> if(index>0) MenuSeparator(); DropdownMenuItem(text = { Text(label) }, onClick = { sort = label; sortMenu = false }) }
-                        }
-                    }
-                    IconButton(onClick = { grid = !grid; prefs.edit { putBoolean("libraryGrid",grid) } }) { Icon(if (grid) Icons.AutoMirrored.Filled.List else Icons.Outlined.GridView, if (grid) "List view" else "Grid view") }
-                }
                 when {
-                    query.isNotBlank() -> if(grid) LazyVerticalGrid(GridCells.Adaptive(156.dp),Modifier.weight(1f),horizontalArrangement=Arrangement.spacedBy(12.dp),verticalArrangement=Arrangement.spacedBy(12.dp),contentPadding=PaddingValues(bottom=100.dp)) {
-                        items(docs,key={ "name-${it.id}" }) { d -> DocumentTile(d,model,{ click(d) },{ if(selection.isEmpty()) selected=d else toggle(d.id) },d.id in selection,{ toggle(d.id); focus.clearFocus() }) }
-                        items(visibleHits,key={ "ocr-${it.pageId}" }) { hit -> SearchPageResult(hit,model,true) { openPage(hit.documentId,hit.pageId) } }
-                        if(docs.isEmpty() && visibleHits.isEmpty()) item(span={ GridItemSpan(maxLineSpan) }) { EmptyState(Icons.Outlined.Search,"No matches","Try another name or word. Pages become searchable as recognition finishes.") }
-                    } else LazyColumn(Modifier.weight(1f),contentPadding=PaddingValues(bottom=100.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
-                        items(docs,key={ "name-${it.id}" }) { d -> ListItem(colors=ListItemDefaults.colors(containerColor=if(d.id in selection) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface),headlineContent={ Text(d.title) },supportingContent={ Text("${d.pageCount} pages · Document name") },leadingContent={ DocumentCover(d,model,Modifier.size(56.dp,72.dp)) },trailingContent={ IconButton(onClick={ if(selection.isEmpty()) selected=d else toggle(d.id) }) { Icon(if(d.id in selection) Icons.Outlined.CheckCircle else Icons.Outlined.MoreVert,"Actions for ${d.title}") } },modifier=Modifier.selectionAppearance(d.id in selection).combinedClickable(onClick={ click(d) },onLongClick={ toggle(d.id); focus.clearFocus() })) }
-                        items(visibleHits,key={ "ocr-${it.pageId}" }) { hit -> SearchPageResult(hit,model,false) { openPage(hit.documentId,hit.pageId) } }
-                        if(docs.isEmpty() && visibleHits.isEmpty()) item { EmptyState(Icons.Outlined.Search,"No matches","Try another name or word. Pages become searchable as recognition finishes.") }
+                    query.isBlank() && state.loading -> Box(Modifier.weight(1f).fillMaxWidth().padding(listPadding), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                    query.isBlank() && docs.isEmpty() -> Box(Modifier.weight(1f).fillMaxWidth().padding(listPadding), contentAlignment = Alignment.Center) {
+                        if (filterDay != null) EmptyState(Icons.Outlined.CalendarToday, "No documents on this date",
+                            "Choose another date or clear the filter.")
+                        else EmptyState(Icons.Outlined.Description, if (tab == 1) "Keep the important ones close" else "Start with a document",
+                            if (tab == 1) "Mark a document as a favorite to find it here." else "Create a document to start your library.")
                     }
-                    state.loading -> Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-                    docs.isEmpty() -> Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        EmptyState(Icons.Outlined.Description, if (query.isNotEmpty()) "No matches" else if (tab == 1) "Keep the important ones close" else "Start with a document",
-                            if (query.isNotEmpty()) "Try another document name." else if (tab == 1) "Mark a document as a favorite to find it here." else "Create a document to start your library.")
+                    grid -> LazyVerticalGrid(GridCells.Adaptive(150.dp), Modifier.weight(1f), state = gridState, horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp), contentPadding = listPadding) {
+                        items(docs, key = { it.id }) { doc -> DocumentTile(doc, model, { click(doc) }, { actions(doc) }, doc.id in selection, { hold(doc) }, { star(doc) }) }
+                        items(visibleHits, key = { "ocr-${it.pageId}" }) { hit -> SearchPageResult(hit, model, true) { openMatch(hit) } }
+                        if (docs.isEmpty() && visibleHits.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) { NoSearchMatches() }
                     }
-                    grid -> LazyVerticalGrid(GridCells.Adaptive(150.dp), Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp), contentPadding = PaddingValues(bottom = 100.dp)) {
-                        items(docs, key = { it.id }) { doc -> DocumentTile(doc,model,{ click(doc) },{ if(selection.isEmpty()) selected=doc else toggle(doc.id) },doc.id in selection,{ toggle(doc.id); focus.clearFocus() }) }
-                    }
-                    else -> LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    else -> LazyColumn(Modifier.weight(1f), state = listState, contentPadding = listPadding, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         items(docs, key = { it.id }) { doc ->
-                            ListItem(colors=ListItemDefaults.colors(containerColor=if(doc.id in selection) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface),headlineContent = { Text(doc.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                                supportingContent = { Text("${doc.pageCount} pages · ${date(doc.modifiedAt)}") }, leadingContent = { DocumentCover(doc,model,Modifier.size(56.dp,72.dp)) },
-                                trailingContent = { IconButton(onClick = { if(selection.isEmpty()) selected=doc else toggle(doc.id) }) { Icon(if(doc.id in selection) Icons.Outlined.CheckCircle else Icons.Outlined.MoreVert, "Actions for ${doc.title}") } }, modifier=Modifier.selectionAppearance(doc.id in selection).combinedClickable(onClick={ click(doc) },onLongClick={ toggle(doc.id); focus.clearFocus() }))
+                            LibraryDocumentRow(doc, model, doc.id in selection, { click(doc) }, { hold(doc) }, { star(doc) }, { actions(doc) })
                         }
+                        items(visibleHits, key = { "ocr-${it.pageId}" }) { hit -> SearchPageResult(hit, model, false) { openMatch(hit) } }
+                        if (docs.isEmpty() && visibleHits.isEmpty()) item { NoSearchMatches() }
                     }
                 }
             }
         }
     }
+    if (datePickerOpen) LibraryDatePicker(filterDate, filterCreated, { datePickerOpen = false }) { picked, created ->
+        filterDate = picked
+        filterCreated = created
+        datePickerOpen = false
+        if (tab == 2) tab = 0
+        resetDocumentScroll()
+    }
     val chosen=selection.mapNotNull { id -> state.documents.find { it.id==id } }
     if(selectionShare && chosen.isNotEmpty()) MultiDocumentShareSheet(chosen,model) { selectionShare=false }
-    if(selectionDelete) AlertDialog(onDismissRequest={ selectionDelete=false },title={ Text("Move ${chosen.size} documents to Recycle Bin?") },text={ Text("Their pages stay available for restoration. Cloud backups remain until permanent deletion.") },confirmButton={ TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick={ model.run { chosen.forEach { model.repository.delete(it.id) }; selectionDelete=false; selection=emptyList() } }) { Text("Move to Recycle Bin") } },dismissButton={ TextButton(onClick={ selectionDelete=false }) { Text("Cancel") } })
-    if (create) NameDialog("New document", "Document name", "", busy, { create = false },validate={ documentNameConflict(it,state.documents) }) { name -> model.run { val id = model.repository.create(name, folder); create = false; open(id) } }
-    if(importUris.isNotEmpty() && importPdf) AlertDialog(onDismissRequest={ importUris=emptyList(); importPassword="" },title={ Text("Review PDF before import") },text={ Column(verticalArrangement=Arrangement.spacedBy(8.dp)) { Text("Review your PDF, then choose Save to Folio. Leaving an unsaved import asks for confirmation. Your source file stays intact."); OutlinedTextField(importPassword,{ importPassword=it },label={ Text("Owner password, if needed") },visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation(),singleLine=true) } },confirmButton={ Button(enabled=!busy,onClick={ val uri=android.net.Uri.parse(importUris.single()); val secret=importPassword; model.run { val id=model.utility.open("edit",listOf(uri),secret,initialImport=true); importUris=emptyList(); importPassword=""; importedPdf(id) } }) { Text("Review PDF") } },dismissButton={ TextButton(onClick={ importUris=emptyList(); importPassword="" }) { Text("Cancel") } })
+    if(selectionDelete) FolioDialog(onDismissRequest={ selectionDelete=false },title={ Text("Move ${chosen.size} documents to Recycle Bin?") },text={ Text("Their pages stay available for restoration. Cloud backups remain until permanent deletion.") },confirmButton={ TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick={ model.run { chosen.forEach { model.repository.delete(it.id) }; selectionDelete=false; selection=emptyList() } }) { Text("Move to Recycle Bin") } },dismissButton={ TextButton(onClick={ selectionDelete=false }) { Text("Cancel") } })
+    if(importUris.isNotEmpty() && importPdf) FolioDialog(onDismissRequest={ importUris=emptyList(); importPassword="" },title={ Text("Review PDF before import") },text={ Column(verticalArrangement=Arrangement.spacedBy(8.dp)) { Text("Review your PDF, then choose Save to Folio. Leaving an unsaved import asks for confirmation. Your source file stays intact."); OutlinedTextField(importPassword,{ importPassword=it },label={ Text("Owner password, if needed") },visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation(),singleLine=true) } },confirmButton={ Button(enabled=!busy,onClick={ val uri=android.net.Uri.parse(importUris.single()); val secret=importPassword; model.run { val id=model.utility.open("edit",listOf(uri),secret,initialImport=true); importUris=emptyList(); importPassword=""; importedPdf(id) } }) { Text("Review PDF") } },dismissButton={ TextButton(onClick={ importUris=emptyList(); importPassword="" }) { Text("Cancel") } })
     if(importUris.isNotEmpty() && !importPdf) NameDialog("Import images","Document name","",busy,{ importUris=emptyList() },validate={ documentNameConflict(it,state.documents) }) { name -> model.run {
         val id=model.repository.create(name,folder); var first:String?=null
         importUris.forEach { raw -> val uri=android.net.Uri.parse(raw); model.utility.grant(uri); context.contentResolver.openInputStream(uri)!!.use { val draft=model.repository.stageScan(id,it); if(first==null) first=draft } }
@@ -307,7 +739,7 @@ private fun LibraryScreen(state: LibraryState, busy: Boolean, model: LibraryView
                         "Share" -> { share=doc.id; selected=null }
                         "Print" -> { print=doc.id; selected=null }
                         "Duplicate" -> action = label
-                        "Favorite", "Remove favorite" -> model.run { model.repository.favorite(doc.id); selected = null }
+                        "Favorite", "Remove favorite" -> { star(doc); selected = null }
                         else -> action = label
                     }
                 })
@@ -315,9 +747,9 @@ private fun LibraryScreen(state: LibraryState, busy: Boolean, model: LibraryView
         }
         if (action == "Rename") NameDialog("Rename document", "Document name", doc.title, busy, { action = ""; selected=null },validate={ documentNameConflict(it,state.documents,doc.id) }) { name -> model.run { model.repository.rename(doc.id, name); selected = null; action = "" } }
         if (action == "Duplicate") NameDialog("Duplicate document", "Document name", doc.title.take(113)+" (copy)", busy, { action = ""; selected=null },validate={ documentNameConflict(it,state.documents) }) { name -> model.run { model.repository.duplicate(doc.id,name); selected=null; action="" } }
-        if (action == "Delete") AlertDialog(onDismissRequest = { action = "" }, title = { Text("Move ${doc.title} to Recycle Bin?") }, text = { Text("Your pages and originals will be kept. You can restore this document from Recycle Bin.") },
+        if (action == "Delete") FolioDialog(onDismissRequest = { action = "" }, title = { Text("Move ${doc.title} to Recycle Bin?") }, text = { Text("Your pages and originals will be kept. You can restore this document from Recycle Bin.") },
             confirmButton = { TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick = { model.run { model.repository.delete(doc.id); selected = null; action = "" } }) { Text("Delete") } }, dismissButton = { TextButton(onClick = { action = ""; selected=null }) { Text("Cancel") } })
-        if (action == "Move to folder") AlertDialog(onDismissRequest = { action = "" }, title = { Text("Move to folder") }, text = {
+        if (action == "Move to folder") FolioDialog(onDismissRequest = { action = "" }, title = { Text("Move to folder") }, text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 TextButton(onClick = { model.run { model.repository.move(doc.id, null); selected = null; action = "" } }) { Text("No folder") }
                 state.folders.forEach { item -> TextButton(onClick = { model.run { model.repository.move(doc.id, item.id); selected = null; action = "" } }) { Text(item.name) } }
@@ -337,52 +769,204 @@ private fun LibraryScreen(state: LibraryState, busy: Boolean, model: LibraryView
 }
 
 @Composable
+private fun NoSearchMatches() {
+    EmptyState(Icons.Outlined.Search, "No matches", "Try another name or word. Pages become searchable as recognition finishes.")
+}
+
+@Composable
 private fun Modifier.selectionAppearance(chosen:Boolean)=this.semantics { selected=chosen }
     .background(if(chosen) MaterialTheme.colorScheme.primaryContainer else androidx.compose.ui.graphics.Color.Transparent,RoundedCornerShape(8.dp))
     .border(if(chosen) 2.dp else 1.dp,if(chosen) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,RoundedCornerShape(8.dp))
 
 @Composable
-private fun DocumentTile(doc: Document, model: LibraryViewModel, open: () -> Unit, actions: () -> Unit, chosen:Boolean=false, hold:()->Unit={}) {
-    val pages by remember(doc.id) { model.repository.dao.observePages(doc.id) }.collectAsStateWithLifecycle(emptyList())
-    Column(Modifier.selectionAppearance(chosen).combinedClickable(onClick=open,onLongClick=hold).padding(8.dp)) {
-        Box(Modifier.fillMaxWidth().aspectRatio(.78f).contentOutline().background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
-            if (pages.isNotEmpty()) PageThumbnail(pages.first(),model,"Document preview",Modifier.fillMaxSize().padding(4.dp))
-            else Icon(Icons.Outlined.Description, null, tint = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.size(40.dp))
-            if (doc.favorite) Icon(Icons.Outlined.Star, "Favorite", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.align(Alignment.TopStart).padding(12.dp))
-            if(doc.importedPdf) PdfBadge(Modifier.align(Alignment.BottomStart).padding(8.dp))
-            if(chosen) Icon(Icons.Outlined.CheckCircle,"Selected",tint=MaterialTheme.colorScheme.primary,modifier=Modifier.align(Alignment.TopStart).padding(8.dp))
-            FilledTonalIconButton(onClick = actions, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp)) { Icon(Icons.Outlined.MoreVert, "Actions for ${doc.title}") }
+private fun LibraryDatePicker(
+    current: Long?, currentCreated: Boolean, dismiss: () -> Unit, apply: (Long, Boolean) -> Unit
+) {
+    val picker = rememberDatePickerState(initialSelectedDateMillis = current)
+    var created by rememberSaveable { mutableStateOf(currentCreated) }
+    DatePickerDialog(
+        onDismissRequest = dismiss,
+        colors = DatePickerDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(
+            alpha = LocalFolioBlur.current.opacity(.97f, .85f))),
+        confirmButton = {
+            FolioWindowBlur(confirmation = true)
+            TextButton(onClick = { picker.selectedDateMillis?.let { apply(it, created) } }, enabled = picker.selectedDateMillis != null) {
+                Text("Apply date")
+            }
+        },
+        dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } }
+    ) {
+        Column(Modifier.verticalScroll(rememberScrollState())) {
+            Text("Filter by date", Modifier.padding(start = 20.dp, top = 16.dp), style = MaterialTheme.typography.titleLarge)
+            Row(Modifier.padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(!created, { created = false }, label = { Text("Modified date") })
+                FilterChip(created, { created = true }, label = { Text("Created date") })
+            }
+            val picked = picker.selectedDateMillis?.let { Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate() }
+            DatePicker(picker, title = null, headline = {
+                Text(picked?.format(DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM)) ?: "Select a day",
+                    Modifier.padding(start = 20.dp), style = MaterialTheme.typography.titleMedium)
+            })
         }
-        Spacer(Modifier.height(10.dp))
-        Text(doc.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
-        Text("${doc.pageCount} pages · ${date(doc.modifiedAt)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+private fun Modifier.revealHeaderSize(horizontal: Boolean = false, fraction: () -> Float): Modifier =
+    clipToBounds().layout { measurable, constraints ->
+        val child = measurable.measure(constraints)
+        val progress = fraction()
+        val width = if (horizontal) (child.width * progress).roundToInt() else child.width
+        val height = if (horizontal) child.height else (child.height * progress).roundToInt()
+        layout(width, height) {
+            child.placeRelativeWithLayer(0, 0) {
+                alpha = ((progress - .45f) / .55f).coerceIn(0f, 1f)
+                compositingStrategy = CompositingStrategy.ModulateAlpha
+                if (!horizontal) translationY = -8.dp.toPx() * (1f - progress)
+            }
+        }
+    }
+
+@Composable
+private fun LibraryStar(doc: Document, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val interactions = remember { MutableInteractionSource() }
+    val pressed by interactions.collectIsPressedAsState()
+    val focused by interactions.collectIsFocusedAsState()
+    val scale = animateFloatAsState(if (pressed) .94f else 1f, tween(120), label = "Star press")
+    Box(Modifier.size(48.dp)
+        .then(if (focused) Modifier.border(1.dp, colors.primary, MaterialTheme.shapes.medium) else Modifier)
+        .toggleable(doc.favorite, interactionSource = interactions, indication = null,
+            role = Role.Checkbox, onValueChange = { onClick() }),
+        contentAlignment = Alignment.Center) {
+        Icon(if (doc.favorite) Icons.Filled.Star else Icons.Outlined.StarBorder,
+            if (doc.favorite) "Unstar ${doc.title}" else "Star ${doc.title}",
+            Modifier.size(20.dp).graphicsLayer { scaleX = scale.value; scaleY = scale.value },
+            tint = if (doc.favorite) colors.primary else colors.onSurfaceVariant)
     }
 }
 
 @Composable
-internal fun DocumentCover(doc: Document,model: LibraryViewModel,modifier: Modifier) {
+private fun LibraryDocumentRow(
+    doc: Document, model: LibraryViewModel, chosen: Boolean,
+    open: () -> Unit, hold: () -> Unit, star: () -> Unit, actions: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        modifier = Modifier.fillMaxWidth().semantics { selected = chosen }
+            .combinedClickable(onClick = open, onLongClick = hold),
+        shape = MaterialTheme.shapes.large,
+        color = if (chosen) colors.primaryContainer else colors.surfaceContainerLow,
+        border = BorderStroke(1.dp, if (chosen) colors.primary else colors.outlineVariant.copy(alpha = .66f))
+    ) {
+        Row(Modifier.padding(start = 12.dp, end = 2.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            DocumentCover(doc, model, Modifier.size(54.dp, 68.dp), fadeIn = false)
+            Column(Modifier.weight(1f).padding(start = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(doc.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                Text("${doc.pageCount} ${if (doc.pageCount == 1) "page" else "pages"} · ${date(doc.modifiedAt)}",
+                    maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+            }
+            if (!chosen) LibraryStar(doc, star)
+            if (chosen) IconButton(onClick = actions) { Icon(Icons.Outlined.CheckCircle, "Actions for ${doc.title}") }
+            else FolioOverflowButton("Actions for ${doc.title}", actions)
+        }
+    }
+}
+
+@Composable
+private fun DocumentTile(doc: Document, model: LibraryViewModel, open: () -> Unit, actions: () -> Unit, chosen:Boolean, hold:()->Unit, star:()->Unit) {
+    val pages by remember(doc.id) { model.repository.dao.observePages(doc.id) }.collectAsStateWithLifecycle(emptyList())
+    val thumbnailBackdrop = rememberDockBackdrop(true)
+    Column(Modifier.selectionAppearance(chosen).combinedClickable(onClick=open,onLongClick=hold).padding(8.dp)) {
+        Box(Modifier.fillMaxWidth().aspectRatio(.78f).contentOutline().background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
+            Box(Modifier.matchParentSize().then(thumbnailBackdrop?.source ?: Modifier), contentAlignment = Alignment.Center) {
+                if (pages.isNotEmpty()) PageThumbnail(pages.first(),model,"Document preview",
+                    Modifier.fillMaxSize().padding(4.dp), fadeIn = false)
+                else Icon(Icons.Outlined.Description, null, tint = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.size(40.dp))
+            }
+            if(doc.importedPdf) PdfBadge(Modifier.align(Alignment.BottomStart).padding(8.dp))
+            if(chosen) Icon(Icons.Outlined.CheckCircle,"Selected",tint=MaterialTheme.colorScheme.primary,modifier=Modifier.align(Alignment.TopStart).padding(8.dp))
+            FolioOverflowButton("Actions for ${doc.title}", actions, Modifier.align(Alignment.TopEnd), backdrop = thumbnailBackdrop)
+        }
+        Row(Modifier.fillMaxWidth().padding(start = 2.dp, top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f).padding(end = 4.dp, top = 4.dp, bottom = 4.dp)) {
+                Text(doc.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                Text("${doc.pageCount} pages · ${date(doc.modifiedAt)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (!chosen) LibraryStar(doc, star)
+        }
+    }
+}
+
+@Composable
+internal fun DocumentCover(doc: Document,model: LibraryViewModel,modifier: Modifier,fadeIn: Boolean = true) {
     val pages by remember(doc.id) { model.repository.dao.observePages(doc.id) }.collectAsStateWithLifecycle(emptyList())
     Box(modifier,contentAlignment=Alignment.Center) {
-        if(pages.isNotEmpty()) PageThumbnail(pages.first(),model,"Document preview",Modifier.fillMaxSize())
+        if(pages.isNotEmpty()) PageThumbnail(pages.first(),model,"Document preview",Modifier.fillMaxSize(), fadeIn = fadeIn)
         else Icon(Icons.Outlined.Description,null,tint=MaterialTheme.colorScheme.outline)
         if(doc.importedPdf) PdfBadge(Modifier.align(Alignment.BottomStart).padding(4.dp))
     }
 }
 
 @Composable
-private fun SettingsScreen(theme: String, change: (String) -> Unit, back: () -> Unit, backup: () -> Unit,ocr:()->Unit) {
-    Scaffold(topBar = { TopAppBar(title = { Text("Settings") }, navigationIcon = { IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } }) }) { padding ->
-        Column(Modifier.padding(padding).padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) { Icon(painterResource(dev.folio.scanner.R.drawable.ic_folio_mark),null,Modifier.size(32.dp),tint=MaterialTheme.colorScheme.primary); Text("Folio",style=MaterialTheme.typography.titleLarge) }
+private fun SettingsScreen(theme: String, change: (String) -> Unit, back: () -> Unit, backup: () -> Unit, ocr: () -> Unit,
+    setBlur: (Boolean) -> Unit, setBlurStrength: (Int) -> Unit, setTranslucency: (Int) -> Unit) {
+    Scaffold(topBar = { FolioTopBar(title = { Text("Settings") }, navigationIcon = { IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } }) }) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Appearance", style = MaterialTheme.typography.titleMedium)
-            listOf("System", "Light", "Dark", "AMOLED").forEach { mode ->
-                Row(Modifier.fillMaxWidth().clickable { change(mode) }.heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) { RadioButton(theme == mode, { change(mode) }); Text(mode) }
+            FolioPanel {
+                val haptic = LocalHapticFeedback.current
+                Column(Modifier.selectableGroup()) {
+                    listOf("System", "Light", "Dark", "AMOLED").forEachIndexed { index, mode ->
+                        if (index != 0) MenuSeparator()
+                        Row(Modifier.fillMaxWidth().background(if (theme == mode) MaterialTheme.colorScheme.secondaryContainer else androidx.compose.ui.graphics.Color.Transparent)
+                            .selectable(theme == mode, role = androidx.compose.ui.semantics.Role.RadioButton, onClick = {
+                                if (mode != theme) { haptic.performHapticFeedback(HapticFeedbackType.VirtualKey); change(mode) }
+                            }).heightIn(min = 48.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(theme == mode, onClick = null)
+                            Text(mode, Modifier.padding(start = 12.dp))
+                        }
+                    }
+                }
             }
-            HorizontalDivider()
-            ListItem(headlineContent={ Text("Google Drive Backup") },supportingContent={ Text("Optional · Your documents stay local") },leadingContent={ Icon(Icons.Outlined.CloudUpload,null) },modifier=Modifier.clickable(onClick=backup))
-            ListItem(headlineContent={ Text("Text recognition") },supportingContent={ Text("Offline · English printed documents") },leadingContent={ Icon(Icons.AutoMirrored.Outlined.TextSnippet,null) },modifier=Modifier.clickable(onClick=ocr))
-            Text("Private by default", style = MaterialTheme.typography.titleMedium)
-            Text("Folio stores documents locally by default. Optional Google Drive backup uploads your Folio backup data only to the account you authorize. Uninstalling Folio removes its local documents.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val glass = LocalFolioBlur.current
+            FolioPanel {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (android.os.Build.VERSION.SDK_INT >= 31) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Background blur", style = MaterialTheme.typography.titleMedium)
+                                Text("Blur behind navigation bars and dialogs", style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Switch(checked = glass.enabled, onCheckedChange = setBlur, modifier = Modifier.semantics {
+                                contentDescription = "Background blur"
+                            })
+                        }
+                        FolioRulerDial("Blur strength", glass.strength.toFloat(), 25f..150f, 100f,
+                            change = { setBlurStrength(it.roundToInt()) },
+                            steps = 24, enabled = glass.enabled, displayValue = "${glass.strength}%")
+                    }
+                    FolioRulerDial("Translucency", glass.translucency.toFloat(), 0f..100f, 50f,
+                        change = { setTranslucency(it.roundToInt()) }, steps = 19,
+                        displayValue = "${glass.translucency}%")
+                }
+            }
+            FolioPanel {
+                Column {
+                    val panels = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent)
+                    ListItem(headlineContent={ Text("Backup") },supportingContent={ Text("Local backup and Google Drive") },leadingContent={ Icon(Icons.Outlined.CloudUpload,null) },trailingContent={ Icon(Icons.Outlined.ChevronRight,null) },colors=panels,modifier=Modifier.clickable(onClick=backup))
+                    MenuSeparator()
+                    ListItem(headlineContent={ Text("Text recognition") },supportingContent={ Text("Offline · English printed documents") },leadingContent={ Icon(Icons.AutoMirrored.Outlined.TextSnippet,null) },trailingContent={ Icon(Icons.Outlined.ChevronRight,null) },colors=panels,modifier=Modifier.clickable(onClick=ocr))
+                }
+            }
+            FolioPanel {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Private by default", style = MaterialTheme.typography.titleMedium)
+                    Text("Folio stores documents locally by default. Optional Google Drive backup uploads your Folio backup data only to the account you authorize. Uninstalling Folio removes its local documents.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
     }
 }
@@ -397,13 +981,40 @@ private fun EmptyState(icon: ImageVector, title: String, message: String) {
 }
 
 @Composable
-internal fun NameDialog(title: String, label: String, initial: String, busy: Boolean, dismiss: () -> Unit, optional: Boolean = false, validate: (String)->String? = { null }, save: (String) -> Unit) {
+internal fun NameDialog(title: String, label: String, initial: String, busy: Boolean, dismiss: () -> Unit, optional: Boolean = false, validate: (String)->String? = { null }, creation: Boolean = false, save: (String) -> Unit) {
     var name by rememberSaveable { mutableStateOf(initial) }
     val problem = when { name.trim().length>120 -> "Use 120 characters or fewer."; name.isNotEmpty() && name.isBlank() && !optional -> "Enter a name."; else -> validate(name.trim()) }
-    AlertDialog(onDismissRequest = dismiss, title = { Text(title) }, text = {
-        OutlinedTextField(name, { name = it }, label = { Text(label) }, singleLine = true,isError=problem!=null,supportingText={ problem?.let { Text(it,Modifier.semantics { liveRegion=androidx.compose.ui.semantics.LiveRegionMode.Polite }) } })
-    }, confirmButton = { TextButton(onClick = { save(name.trim()) }, enabled = (optional || name.isNotBlank()) && problem==null && !busy) { Text("Save") } },
-        dismissButton = { Row { if(optional) TextButton(onClick={ name="" }) { Text("Reset name") }; TextButton(onClick = dismiss, enabled = !busy) { Text("Cancel") } } })
+    val saveName = { save(name.trim()) }
+    val canSave = (optional || name.isNotBlank()) && problem == null && !busy
+    FolioDialog(onDismissRequest = dismiss, title = {
+        if (creation) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.primaryContainer) {
+                    Icon(Icons.Outlined.CameraAlt, null, Modifier.padding(10.dp).size(22.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                }
+                Text(title)
+            }
+        } else Text(title)
+    }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (creation) Text("Name your document, then add pages with the camera.")
+            OutlinedTextField(
+                name, { name = it }, modifier = Modifier.fillMaxWidth(), label = { Text(label) },
+                singleLine = true, isError = problem != null,
+                supportingText = problem?.let { message -> { Text(message, Modifier.semantics {
+                    liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Polite
+                }) } },
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Done),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { if (canSave) saveName() })
+            )
+        }
+    }, confirmButton = {
+        if (creation) Button(onClick = saveName, enabled = canSave) { Text("Save") }
+        else TextButton(onClick = saveName, enabled = canSave) { Text("Save") }
+    }, dismissButton = {
+        Row { if(optional) TextButton(onClick={ name="" }) { Text("Reset name") }; TextButton(onClick = dismiss, enabled = !busy) { Text("Cancel") } }
+    })
 }
 
 private fun date(time: Long): String = DateFormat.getDateInstance(DateFormat.SHORT).format(Date(time))

@@ -87,14 +87,43 @@ class PrintAmoledUiTest {
             device.pressBack()
             compose.waitUntil(15000) { compose.onAllNodesWithContentDescription("Document actions").fetchSemanticsNodes(atLeastOneRootRequired=false).isNotEmpty() }
             compose.onNodeWithContentDescription("Preview page 1").performClick()
-            compose.waitUntil(30000) { compose.onAllNodesWithContentDescription("Enhanced page preview").fetchSemanticsNodes().isNotEmpty() }
+            fun awaitEditorRender() {
+                compose.waitUntil(30000) {
+                    compose.onAllNodes(hasText("Save", substring = false) and isEnabled()).fetchSemanticsNodes().isNotEmpty()
+                }
+            }
+            awaitEditorRender()
             screenshot("editor")
+            val compare = compose.onNodeWithText("After").fetchSemanticsNode().boundsInRoot
+            val print = compose.onNodeWithContentDescription("Print document").fetchSemanticsNode().boundsInRoot
+            val undo = compose.onNodeWithContentDescription("Undo filter edit")
+            val redo = compose.onNodeWithContentDescription("Redo filter edit")
+            val undoBounds = undo.fetchSemanticsNode().boundsInRoot
+            val redoBounds = redo.fetchSemanticsNode().boundsInRoot
+            assertTrue("History sits between comparison and Print in the bottom tray",
+                compare.right < undoBounds.left && undoBounds.right <= redoBounds.left && redoBounds.right < print.left &&
+                    kotlin.math.abs(compare.center.y - undoBounds.center.y) < 8f &&
+                    kotlin.math.abs(redoBounds.center.y - print.center.y) < 8f)
+            undo.assertIsNotEnabled()
+            redo.assertIsNotEnabled()
+            compose.onNodeWithText("Auto", substring = false).performScrollTo().performClick()
+            undo.assertIsEnabled()
+            redo.assertIsNotEnabled()
+            awaitEditorRender()
+            screenshot("editor-undo")
+            undo.performClick().assertIsNotEnabled()
+            redo.assertIsEnabled()
+            awaitEditorRender()
+            screenshot("editor-redo")
             device.pressBack()
             compose.waitUntil(15000) { compose.onAllNodesWithContentDescription("Document actions").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithContentDescription("Back").performClick()
             runBlocking { docs.delete(doc) }
             compose.onNodeWithContentDescription("Recycle Bin").performClick()
-            compose.onNodeWithText("Deletes permanently in 60 days").assertIsDisplayed(); screenshot("recycle")
+            compose.onNodeWithText("Deletes permanently in 60 days").assertIsDisplayed()
+            compose.onNodeWithContentDescription("Select all recycled documents").performClick()
+            compose.onNodeWithText("Restore selected").assertIsDisplayed().assertIsEnabled()
+            screenshot("recycle")
         } finally {
             runBlocking { docs.dao.document(doc)?.let { if(it.trashedAt==null) docs.delete(doc); docs.permanentlyDelete(setOf(doc)) } }
             context.getSharedPreferences("appearance",0).edit().putString("theme","System").commit()

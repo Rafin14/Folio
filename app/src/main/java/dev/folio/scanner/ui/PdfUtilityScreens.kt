@@ -9,6 +9,10 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.*
@@ -27,13 +31,14 @@ import org.json.JSONArray
 import java.io.File
 
 @Composable
-fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(String)->Unit,initialSession:String="",importIntoFolio:Boolean=false,initialPage:Int=0) {
+fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(String)->Unit,initialSession:String="",importIntoFolio:Boolean=false,initialPage:Int=0,libraryDock:(()->Unit)?=null,dockLens:State<Float>?=null,motion:Modifier=Modifier,initialSearchMatch:Boolean=false) {
     val utility=model.utility
     val library by model.state.collectAsStateWithLifecycle()
     val busy by model.busy.collectAsStateWithLifecycle()
     val jobs by remember { utility.work.getWorkInfosByTagFlow("pdf-utility") }.collectAsStateWithLifecycle(emptyList())
     var gallery by rememberSaveable {mutableStateOf(true)}
     var selectedPdfPage by rememberSaveable {mutableIntStateOf(initialPage)}
+    var searchMatch by rememberSaveable(initialSession) { mutableStateOf(initialSearchMatch) }
     var sessionId by rememberSaveable { mutableStateOf(initialSession) }
     var analysisTool by rememberSaveable { mutableStateOf("") }
     var analysisSession by rememberSaveable { mutableStateOf("") }
@@ -129,17 +134,27 @@ fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(S
     } }
     val folderDestination=rememberLauncherForActivityResult(PdfDestinationPicker()) { uri -> if(uri!=null) { model.run { val retained=withContext(Dispatchers.IO) { utility.rememberDestination(destinationType,uri) }; if(!retained) model.error.value="This provider granted temporary access only. Choose a folder again for your next export."; folderRevision++ }; if(!changingFolder) exportFolder(uri); changingFolder=false } }
     fun chooseDestination() { model.run { val folder=withContext(Dispatchers.IO) { utility.rememberedDestination(destinationType) }; if(folder!=null) exportFolder(folder) else { changingFolder=false; folderDestination.launch(documentsLocation) } } }
+    val dockVisible = sessionId.isEmpty() && initialSession.isEmpty() && libraryDock != null
+    val backdrop = rememberDockBackdrop(dockVisible)
     if(sessionId.isNotEmpty() && session?.getString("kind")=="edit" && session.optString("state")!="complete" && active?.state!=WorkInfo.State.SUCCEEDED && !choosingExport && !working) {
         val pageState=session.getJSONArray("pages").let { a -> List(a.length()) { UtilityPage.from(a.getJSONObject(it)) } }
-        if(gallery) PdfPageGallery(sessionId,pageState,pdfFileStem(session.getJSONArray("names").getString(0)),session.has("folioDocument"),model,selectedPdfPage,::close,saveToFolio=if(importIntoFolio && session.has("initialImportDocument") && (!session.optBoolean("initialImportSaved") || session.optBoolean("dirty"))) { {val id=sessionId;model.run {utility.persistInitialImport(id);savedFolio=true;revision++}} } else null,saving=busy,reordered={ordered -> val activeId=pageState.getOrNull(selectedPdfPage)?.id;selectedPdfPage=ordered.indexOfFirst {it.id==activeId}.coerceAtLeast(0);revision++}) {index -> selectedPdfPage=index;gallery=false}
+        if(gallery) PdfPageGallery(sessionId,pageState,pdfFileStem(session.getJSONArray("names").getString(0)),session.has("folioDocument"),model,selectedPdfPage,::close,saveToFolio=if(importIntoFolio && session.has("initialImportDocument") && (!session.optBoolean("initialImportSaved") || session.optBoolean("dirty"))) { {val id=sessionId;model.run {utility.persistInitialImport(id);savedFolio=true;revision++}} } else null,saving=busy,reordered={ordered -> val activeId=pageState.getOrNull(selectedPdfPage)?.id;selectedPdfPage=ordered.indexOfFirst {it.id==activeId}.coerceAtLeast(0);revision++},searchMatch=searchMatch) {index -> selectedPdfPage=index;searchMatch=false;gallery=false}
         else PdfUtilityEditor(sessionId,pageState,model,::close,{ choosingExport=true },{ revision++ },initialPage=selectedPdfPage,showGallery={gallery=true},pageSelected={selectedPdfPage=it})
-    } else Scaffold(modifier=Modifier.workspaceSwipe(sessionId.isEmpty() && !busy && !chooseSource && !chooseManaged && !chooseDocs && !licenses,false,back),topBar={ TopAppBar(title={ Text("PDF workspace") },navigationIcon={ IconButton(onClick=::close,enabled=!busy) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back") } },actions={if(sessionId.isNotEmpty()) Box {
-        IconButton(onClick={operationMenu=true}) {Icon(Icons.Outlined.MoreVert,"PDF operation menu")}
+    } else Scaffold(modifier=Modifier.workspaceSwipe(sessionId.isEmpty() && !busy && !chooseSource && !chooseManaged && !chooseDocs && !licenses,false,back),topBar={ Box(motion.fillMaxWidth()) { FolioTopBar(title={ Text("PDF workspace") },navigationIcon={ IconButton(onClick=::close,enabled=!busy) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back") } },actions={if(sessionId.isNotEmpty()) Box {
+        FolioOverflowButton("PDF operation menu", { operationMenu = true })
         FolioOverflowMenu(operationMenu,{operationMenu=false},when(kind) {"merge" -> "Merge PDF"; "split" -> "Split PDF"; "raster" -> "PDF to Image"; "images" -> "Image to PDF"; "edit" -> "Edit PDF"; else -> "Generate PDF"}) {
             FolioMenuItem(label="Discard operation",enabled=!working && !busy,onClick={operationMenu=false;unsaved=true})
         }
-    }}) }) { padding ->
-        LazyColumn(Modifier.fillMaxSize().padding(padding),contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+    }}) } }, bottomBar = {
+        if (dockVisible) {
+            FolioDock(true, !busy, backdrop, dockLens, library = libraryDock, workspace = {})
+        }
+    }) { padding ->
+        val bottom = if (dockVisible) padding.calculateBottomPadding() + 16.dp else 16.dp
+        val toolsScroll = rememberLazyListState()
+        var toolsViewport by remember { mutableStateOf(Rect.Zero) }
+        LazyColumn(Modifier.fillMaxSize().dockContentPadding(padding, dockVisible).then(backdrop?.source ?: Modifier) .then(motion).onGloballyPositioned { toolsViewport = it.boundsInRoot() },
+            state = toolsScroll, contentPadding=PaddingValues(start=16.dp,top=16.dp,end=16.dp,bottom=bottom),verticalArrangement=Arrangement.spacedBy(12.dp)) {
             if(sessionId.isEmpty()) {
                 if(completed) item { Text("Export verified in device storage",color=MaterialTheme.colorScheme.primary,style=MaterialTheme.typography.titleSmall) }
                 items(listOf("Split PDF" to "split","Merge PDF" to "merge","Image to PDF" to "images","PDF to Image" to "raster","Edit PDF" to "edit","Generate PDF" to "generate","OCR PDF" to "ocr","Extract Images and Figures" to "figures","PDF to Word" to "word")) { (label,key) ->
@@ -166,7 +181,7 @@ fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(S
                         Text("Drag to arrange merge order",style=MaterialTheme.typography.titleMedium)
                         OutlinedButton(onClick={ addingMerge=true; chooseSource=true },enabled=!busy) { Icon(Icons.Outlined.Add,null,Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text("Add PDF") }
                         if(order.size<2) Text("Add another PDF to merge.",style=MaterialTheme.typography.bodySmall)
-                        ReorderList(order.map { it.toString() },{ key -> pdfFileStem(session!!.getJSONArray("names").getString(key.toInt()))+" - "+session!!.getJSONArray("counts").getInt(key.toInt())+" pages" },trailing={ key ->
+                        ReorderList(order.map { it.toString() },{ key -> pdfFileStem(session!!.getJSONArray("names").getString(key.toInt()))+" - "+session!!.getJSONArray("counts").getInt(key.toInt())+" pages" }, toolsScroll, { toolsViewport }, trailing={ key ->
                             IconButton(onClick={ utility.removeMergeInput(sessionId,key.toInt()); val j=utility.session(sessionId); title=j.getJSONArray("order").let { list -> (0 until list.length()).joinToString(" ") { pdfFileStem(j.getJSONArray("names").getString(list.getInt(it))) } }+" merged"; revision++ },enabled=!busy) { Icon(Icons.Outlined.Close,"Remove PDF ${key.toInt()+1}") }
                         }) { ordered -> val j=utility.session(sessionId).put("order",JSONArray(ordered.map(String::toInt))); utility.save(sessionId,j); title=ordered.joinToString(" ") { pdfFileStem(j.getJSONArray("names").getString(it.toInt())) }+" merged"; revision++ }
                     }
@@ -177,7 +192,7 @@ fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(S
             }
         }
     }
-    if(passwordDialog) AlertDialog(onDismissRequest={ passwordDialog=false; picked=emptyList(); password="" },title={ Text("Open selected PDF") },text={ Column { Text("The source stays untouched. Enter its owner password only if protected."); OutlinedTextField(password,{ password=it },label={ Text("Owner password, if needed") },visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation(),singleLine=true) } },confirmButton={ Button(onClick=::acceptInput,enabled=!busy) { Text("Open") } },dismissButton={ OutlinedButton(onClick={ passwordDialog=false; password=""; picked=emptyList() }) { Text("Cancel") } })
+    if(passwordDialog) FolioDialog(onDismissRequest={ passwordDialog=false; picked=emptyList(); password="" },title={ Text("Open selected PDF") },text={ Column { Text("The source stays untouched. Enter its owner password only if protected."); OutlinedTextField(password,{ password=it },label={ Text("Owner password, if needed") },visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation(),singleLine=true) } },confirmButton={ Button(onClick=::acceptInput,enabled=!busy) { Text("Open") } },dismissButton={ OutlinedButton(onClick={ passwordDialog=false; password=""; picked=emptyList() }) { Text("Cancel") } })
     if(chooseSource) PdfSourceDialog(when(kind) {"split" -> "Split PDF";"merge" -> if(addingMerge) "Add PDF" else "Merge PDF";"raster" -> "PDF to Image";else -> "Edit PDF"},{chooseSource=false;if(kind=="merge" && !addingMerge) mergeInput.launch(arrayOf("application/pdf")) else pdfInput.launch(arrayOf("application/pdf"))},{chooseSource=false;chooseManaged=true},{chooseSource=false})
     if(chooseManaged) {
         if(kind in listOf("split","merge","edit","raster")) ManagedPdfChooser(model,{chooseManaged=false},::acceptFolio)
@@ -186,8 +201,8 @@ fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(S
     if(chooseDocs) FolioPageChooser(model,false,{ chooseDocs=false },pdfOnly=true) { selected -> model.run {
         sessionId=utility.fromPages(selected,pdfOnly=true); kind="generate"; title=selected.map { it.documentId }.distinct().mapNotNull { id -> library.documents.find { it.id==id }?.title }.joinToString(" "); chooseDocs=false; revision++
     } }
-    if(cancelImport) AlertDialog(onDismissRequest={cancelImport=false},title={Text("Cancel Import?")},text={Text("This PDF has not been saved to Folio. Do you want to cancel the import? Your original file will remain unchanged.")},confirmButton={OutlinedButton(colors=ButtonDefaults.outlinedButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick=discard@{if(leaving) return@discard;val id=sessionId;leaving=true;model.run {try {utility.cancelAndDiscard(id);sessionId="";cancelImport=false;back()} finally {leaving=false}}}) {Text("Discard Import")}},dismissButton={TextButton(onClick={cancelImport=false}) {Text("Keep Importing")}})
-    if(unsaved) AlertDialog(
+    if(cancelImport) FolioDialog(onDismissRequest={cancelImport=false},title={Text("Cancel Import?")},text={Text("This PDF has not been saved to Folio. Do you want to cancel the import? Your original file will remain unchanged.")},confirmButton={OutlinedButton(colors=ButtonDefaults.outlinedButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick=discard@{if(leaving) return@discard;val id=sessionId;leaving=true;model.run {try {utility.cancelAndDiscard(id);sessionId="";cancelImport=false;back()} finally {leaving=false}}}) {Text("Discard Import")}},dismissButton={TextButton(onClick={cancelImport=false}) {Text("Keep Importing")}})
+    if(unsaved) FolioDialog(
         onDismissRequest={ unsaved=false },
         title={ Text("Leave with unsaved changes?") },
         text={ Text("Export a new file to keep your work, or discard this temporary session. The source and Folio documents remain unchanged.") },
@@ -199,5 +214,5 @@ fun PdfWorkspace(documentId:String?,model:LibraryViewModel,back:()->Unit,open:(S
             }
         }
     )
-    if(licenses) AlertDialog(onDismissRequest={ licenses=false },title={ Text("PDF licenses") },text={ Text("iText Community 9.8.0, AGPL-3.0; Copyright iText Group NV. Bouncy Castle, MIT. PDFium and PdfiumAndroidKt, BSD/Apache-2.0. PP-DocLayoutV3, Apache-2.0. Corresponding source, license notices and build instructions accompany Folio's source bundle.") },confirmButton={ Button(onClick={ licenses=false }) { Text("Close") } })
+    if(licenses) FolioDialog(onDismissRequest={ licenses=false },title={ Text("PDF licenses") },text={ Text("iText Community 9.8.0, AGPL-3.0; Copyright iText Group NV. Bouncy Castle, MIT. PDFium and PdfiumAndroidKt, BSD/Apache-2.0. PP-DocLayoutV3, Apache-2.0. Corresponding source, license notices and build instructions accompany Folio's source bundle.") },confirmButton={ Button(onClick={ licenses=false }) { Text("Close") } })
 }

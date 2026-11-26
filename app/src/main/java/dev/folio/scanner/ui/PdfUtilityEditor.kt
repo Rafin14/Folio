@@ -24,6 +24,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
@@ -97,8 +100,8 @@ internal fun PdfUtilityEditor(id:String,initialPages:List<UtilityPage>,model:Lib
     }; return }
     fun leave() { if(drawing) drawing=false else back() }
     BackHandler { leave() }
-    Scaffold(topBar={ TopAppBar(title={ Text("${pager.currentPage+1} of ${pages.size}",maxLines=1) },navigationIcon={ FilledTonalButton(onClick=export,enabled=!busy,modifier=Modifier.padding(start=8.dp)) { Text("Export") } },actions={ Box {
-        IconButton(onClick={operationMenu=true}) {Icon(Icons.Outlined.MoreVert,"PDF editor menu")}
+    Scaffold(topBar={ FolioTopBar(title={ Text("${pager.currentPage+1} of ${pages.size}",maxLines=1) },navigationIcon={ FilledTonalButton(onClick=export,enabled=!busy,modifier=Modifier.padding(start=8.dp)) { Text("Export") } },actions={ Box {
+        FolioOverflowButton("PDF editor menu", { operationMenu = true })
         FolioOverflowMenu(operationMenu,{operationMenu=false},"Edit PDF") {
             if(showGallery!=null) FolioMenuItem(label="Page gallery",onClick={operationMenu=false;showGallery()})
             FolioMenuItem(label="Save and Export",enabled=!busy,onClick={operationMenu=false;export()})
@@ -106,7 +109,8 @@ internal fun PdfUtilityEditor(id:String,initialPages:List<UtilityPage>,model:Lib
             FolioMenuItem(label="Arrange PDF pages",onClick={operationMenu=false;organize=true})
         }
     }; IconButton(onClick={ organize=true }) { Icon(Icons.Outlined.ViewList,"Arrange PDF pages") }; IconButton(onClick=::leave,enabled=!busy) { Icon(Icons.Outlined.Close,"Close PDF editor") } }) },bottomBar={
-        Column(Modifier.navigationBarsPadding().padding(horizontal=12.dp,vertical=8.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
+        FolioActionTray(Modifier.navigationBarsPadding()) {
+            Column(verticalArrangement=Arrangement.spacedBy(6.dp)) {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 FilterChip(drawing,{ drawing=!drawing },label={ Text(if(drawing) "Drawing" else "Draw") })
                 OutlinedButton(onClick={ update(current.rotated()) }) { Icon(Icons.Outlined.Rotate90DegreesCw,null); Text("Rotate") }
@@ -119,6 +123,7 @@ internal fun PdfUtilityEditor(id:String,initialPages:List<UtilityPage>,model:Lib
                 listOf(.002f,.004f,.009f).forEachIndexed { i,w -> FilterChip(pen==w,{ pen=w },label={ Text(listOf("Fine","Medium","Bold")[i]) }) }
             }
             Text(if(drawing) "Draw on the page. Turn Draw off to swipe." else "Swipe between pages. Export saves a new file.",style=MaterialTheme.typography.labelSmall,color=colors.onSurfaceVariant)
+            }
         }
     }) { padding -> HorizontalPager(pager,Modifier.fillMaxSize().padding(padding),userScrollEnabled=!drawing && !busy && zoomedPage!=current.id,key={ pages[it].id }) { index ->
         val page=pages[index]
@@ -183,9 +188,30 @@ internal fun PdfUtilityEditor(id:String,initialPages:List<UtilityPage>,model:Lib
             }
         }
     } }
-    if(remove) AlertDialog(onDismissRequest={ remove=false },title={ Text("Delete this PDF page?") },text={ Text("The page is removed from this edited copy. The source remains unchanged.") },confirmButton={ Button(colors=ButtonDefaults.buttonColors(containerColor=MaterialTheme.colorScheme.error,contentColor=MaterialTheme.colorScheme.onError),onClick={ val next=pages-current; pages=next; utility.updatePages(id,next); changed(); remove=false }) { Text("Delete page") } },dismissButton={ OutlinedButton(onClick={ remove=false }) { Text("Cancel") } })
-    if(organize) ModalBottomSheet(onDismissRequest={ organize=false }) { Column(Modifier.heightIn(max=600.dp).verticalScroll(rememberScrollState()).padding(16.dp)) { Text("Drag pages to arrange",style=MaterialTheme.typography.titleLarge); ReorderList(pages.map { it.id },{ key -> "Page ${pages.indexOfFirst { it.id==key }+1} · Source ${pages.first { it.id==key }.source}" }) { order -> val activeId=current.id; pages=order.map { key -> pages.first { it.id==key } }; utility.updatePages(id,pages); changed(); scope.launch { pager.scrollToPage(pages.indexOfFirst { it.id==activeId }) } }; Button(onClick={ organize=false },modifier=Modifier.fillMaxWidth()) { Text("Done") } } }
-    if(replace) AlertDialog(onDismissRequest={ replace=false },title={ Text("Replace this page") },text={ Column(verticalArrangement=Arrangement.spacedBy(8.dp)) { OutlinedButton(onClick={ replace=false; devicePicker.launch(arrayOf("image/*","application/pdf")) },modifier=Modifier.fillMaxWidth()) { Text("Choose device image or PDF") }; OutlinedButton(onClick={ replace=false; scan=true },modifier=Modifier.fillMaxWidth()) { Text("Use Folio scanner") }; OutlinedButton(onClick={ replace=false; choosePage=true },modifier=Modifier.fillMaxWidth()) { Text("Choose Folio page") } } },confirmButton={ TextButton(onClick={ replace=false }) { Text("Cancel") } })
+    if(remove) FolioDialog(onDismissRequest={ remove=false },title={ Text("Delete this PDF page?") },text={ Text("The page is removed from this edited copy. The source remains unchanged.") },confirmButton={ Button(colors=ButtonDefaults.buttonColors(containerColor=MaterialTheme.colorScheme.error,contentColor=MaterialTheme.colorScheme.onError),onClick={ val next=pages-current; pages=next; utility.updatePages(id,next); changed(); remove=false }) { Text("Delete page") } },dismissButton={ OutlinedButton(onClick={ remove=false }) { Text("Cancel") } })
+    if (organize) FolioSheet(onDismissRequest = { organize = false }) {
+        val scroll = rememberScrollState()
+        var viewport by remember { mutableStateOf(Rect.Zero) }
+        Column(Modifier.fillMaxWidth().heightIn(max = 600.dp).padding(horizontal = 16.dp)) {
+            Text("Drag pages to arrange", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(bottom = 12.dp))
+            Column(Modifier.fillMaxWidth().weight(1f, fill = false)
+                .onGloballyPositioned { viewport = it.boundsInRoot() }.verticalScroll(scroll)) {
+                ReorderList(
+                    pages.map { it.id },
+                    { key -> "Page ${pages.indexOfFirst { it.id == key } + 1} · Source ${pages.first { it.id == key }.source}" },
+                    scroll, { viewport }
+                ) { order ->
+                    val activeId = current.id
+                    pages = order.map { key -> pages.first { it.id == key } }
+                    utility.updatePages(id, pages)
+                    changed()
+                    scope.launch { pager.scrollToPage(pages.indexOfFirst { it.id == activeId }) }
+                }
+            }
+            Button(onClick = { organize = false }, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) { Text("Done") }
+        }
+    }
+    if(replace) FolioDialog(onDismissRequest={ replace=false },title={ Text("Replace this page") },text={ Column(verticalArrangement=Arrangement.spacedBy(8.dp)) { OutlinedButton(onClick={ replace=false; devicePicker.launch(arrayOf("image/*","application/pdf")) },modifier=Modifier.fillMaxWidth()) { Text("Choose device image or PDF") }; OutlinedButton(onClick={ replace=false; scan=true },modifier=Modifier.fillMaxWidth()) { Text("Use Folio scanner") }; OutlinedButton(onClick={ replace=false; choosePage=true },modifier=Modifier.fillMaxWidth()) { Text("Choose Folio page") } } },confirmButton={ TextButton(onClick={ replace=false }) { Text("Cancel") } })
     if(choosePage) FolioPageChooser(model,true,{ choosePage=false }) { choices -> model.run { val choice=choices.single(); val snapshots=model.repository.snapshotImages(choice.documentId,File(utility.folder(id),"folio-${UUID.randomUUID()}"),setOf(choice.pageId)); copyReplacement(snapshots.single()); choosePage=false } }
 }
 

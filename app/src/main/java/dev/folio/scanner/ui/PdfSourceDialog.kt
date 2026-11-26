@@ -10,7 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
 @Composable internal fun PdfSourceDialog(title:String,storage:()->Unit,folio:()->Unit,dismiss:()->Unit) {
-    AlertDialog(onDismissRequest=dismiss,title={Text(title)},text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
+    FolioDialog(onDismissRequest=dismiss,title={Text(title)},text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
         Text("Choose a PDF source",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
         listOf(Triple("Select from Storage",Icons.Outlined.FolderOpen,storage),Triple("Folio Documents",Icons.Outlined.Description,folio)).forEach {(label,icon,action) ->
             Surface(onClick=action,shape=MaterialTheme.shapes.medium,color=MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha=.92f),border=BorderStroke(.5.dp,MaterialTheme.colorScheme.outlineVariant)) {

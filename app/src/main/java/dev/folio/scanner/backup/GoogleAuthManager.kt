@@ -4,9 +4,14 @@ import android.accounts.Account
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.MutableContextWrapper
 import androidx.credentials.*
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
+import androidx.credentials.exceptions.GetCredentialProviderConfigurationException
+import androidx.credentials.exceptions.NoCredentialException
 import com.google.android.gms.auth.api.identity.*
+import com.google.android.gms.common.api.ApiException
+import com.google.android.gms.common.api.CommonStatusCodes
 import com.google.android.gms.common.api.Scope
 import com.google.android.libraries.identity.googleid.*
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -15,6 +20,12 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 class BackupAuthRequired : Exception("Reconnect Google Account to authorize Drive backup.")
+internal fun driveAuthorizationError(status: Int): String = when (status) {
+    CommonStatusCodes.DEVELOPER_ERROR -> "Google Drive rejected this build’s OAuth configuration (code 10). Check the Android client’s package name and signing certificate."
+    CommonStatusCodes.NETWORK_ERROR, CommonStatusCodes.TIMEOUT -> "Google Drive authorization could not reach Google (code $status). Check your connection and try again."
+    CommonStatusCodes.CANCELED -> "Google Drive authorization was cancelled."
+    else -> "Google Drive authorization failed (code $status)."
+}
 data class DriveAuthorization(val pendingIntent: PendingIntent?)
 interface DriveAuth {
     suspend fun selectAccount(activity:Context):String
@@ -35,10 +46,18 @@ class GoogleAuthManager @Inject constructor(@ApplicationContext private val cont
     private val manager get()=CredentialManager.create(context)
     override suspend fun selectAccount(activity: Context): String {
         check(dev.folio.scanner.BuildConfig.GOOGLE_WEB_CLIENT_ID.isNotBlank()) { "Google sign-in is not configured. Follow docs/GOOGLE_DRIVE_SETUP.md and rebuild Folio with your public Web client ID." }
-        manager.clearCredentialState(ClearCredentialStateRequest())
         val option=GetSignInWithGoogleOption.Builder(dev.folio.scanner.BuildConfig.GOOGLE_WEB_CLIENT_ID).build()
-        val result=try { manager.getCredential(MutableContextWrapper(activity),GetCredentialRequest.Builder().addCredentialOption(option).build()) }
-        catch(_:androidx.credentials.exceptions.NoCredentialException) { throw IllegalStateException("No Google account is available. Add an account on this device and try again.") }
+        val result = try {
+            manager.getCredential(activity, GetCredentialRequest.Builder().addCredentialOption(option).build())
+        } catch (_: NoCredentialException) {
+            throw IllegalStateException("No Google account is available. Add an account on this device and try again.")
+        } catch (_: GetCredentialCancellationException) {
+            throw IllegalStateException("Google sign-in was cancelled.")
+        } catch (_: GetCredentialProviderConfigurationException) {
+            throw IllegalStateException("Google sign-in is unavailable through Credential Manager. Check that Google Play services is enabled and up to date.")
+        } catch (error: GetCredentialException) {
+            throw IllegalStateException("Google sign-in failed (${error.javaClass.simpleName}).")
+        }
         val credential=result.credential
         require(credential is CustomCredential && credential.type==GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) { "Google did not return a valid account." }
         // Only the account identifier is used locally. No relying-party server or persisted ID token exists.
@@ -66,12 +85,14 @@ class GoogleAuthManager @Inject constructor(@ApplicationContext private val cont
         return result.accessToken?.takeIf { it.isNotEmpty() } ?: throw BackupAuthRequired()
     }
     override suspend fun connect(email:String):DriveAuthorization {
-        val result=client.authorize(request(email)).await()
+        val result = try { client.authorize(request(email)).await() }
+        catch (error: ApiException) { throw IllegalStateException(driveAuthorizationError(error.statusCode)) }
         if(!result.hasResolution()) require(!result.accessToken.isNullOrEmpty() && DRIVE_FILE in result.grantedScopes) { "Google did not authorize Drive." }
         return DriveAuthorization(if(result.hasResolution()) result.pendingIntent else null)
     }
     override fun complete(intent:Intent) {
-        val result=client.getAuthorizationResultFromIntent(intent)
+        val result = try { client.getAuthorizationResultFromIntent(intent) }
+        catch (error: ApiException) { throw IllegalStateException(driveAuthorizationError(error.statusCode)) }
         require(!result.hasResolution() && !result.accessToken.isNullOrEmpty() && DRIVE_FILE in result.grantedScopes) { "Google Drive permission was not granted." }
     }
     override suspend fun token(email:String):String {

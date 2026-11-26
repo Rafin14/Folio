@@ -83,7 +83,7 @@ class DocumentRepository @Inject constructor(
                 try { page.copy(originalImageUri=pin(inputs.first,"original"),processedImageUri=pin(inputs.second,"processed"),thumbnailUri="") }
                 finally { inputs.first.close(); inputs.second.close() }
             }
-            snapshot.documents.filter { it.pdfHash.isNotEmpty() && it.pdfRevision>0 }.forEach { doc ->
+            snapshot.documents.filter { it.pdfHash.isNotEmpty() && it.pdfRevision>0 }.distinctBy { it.pdfHash }.forEach { doc ->
                 val source=mutation.withLock {
                     require(dao.document(doc.id)?.pdfHash==doc.pdfHash) { "PDF changed while preparing backup. Retry." }
                     File(directory(doc.id),"pdf/${doc.pdfHash}.pdf").inputStream()
@@ -100,9 +100,10 @@ class DocumentRepository @Inject constructor(
             snapshot to snapshot.copy(pages=pinned,documents=snapshot.documents.map { if(it.pdfRevision==0L) it.copy(pdfHash="") else it })
     }
     /** All assets and thumbnails must be validated before this bounded, atomic publication. */
-    suspend fun mergeBackup(manifest: dev.folio.scanner.backup.BackupManifest, stage: File, operation: String): Int = mutation.withLock {
+    suspend fun mergeBackup(manifest: dev.folio.scanner.backup.BackupManifest, stage: File, operation: String,
+                            remote: Boolean = true): Int = mutation.withLock {
         withContext(Dispatchers.IO + NonCancellable) {
-            manifest.validate(); dev.folio.scanner.backup.BackupManifest.uuid(operation)
+            manifest.validate(remote); dev.folio.scanner.backup.BackupManifest.uuid(operation)
             val receipt="restore:$operation"
             dao.backupRecord(receipt)?.let { return@withContext it.bytes.toInt() }
             val journal=android.util.AtomicFile(File(stage,"merge.json"))
@@ -156,6 +157,23 @@ class DocumentRepository @Inject constructor(
                 dao.save(BackupRecord(receipt,manifest.id,"",documents.size.toLong(),System.currentTimeMillis(),"complete"))
             }
             documents.size
+        }
+    }
+    internal suspend fun cleanLocalBackupStage(stage: File) = mutation.withLock {
+        withContext(Dispatchers.IO + NonCancellable) {
+            val operation = stage.name
+            dev.folio.scanner.backup.BackupManifest.uuid(operation)
+            val journal = android.util.AtomicFile(File(stage, "merge.json"))
+            if (journal.baseFile.exists() || File(stage, "merge.json.bak").exists()) {
+                val mapped = org.json.JSONObject(String(journal.readFully())).getJSONObject("documents")
+                for (key in mapped.keys()) {
+                    val id = mapped.getString(key)
+                    val published = directory(id)
+                    if (dao.document(id) == null && File(published, "restore-owner").takeIf { it.isFile }?.readText() == operation)
+                        check(published.deleteRecursively()) { "Could not recover an interrupted backup import." }
+                }
+            }
+            check(stage.deleteRecursively()) { "Could not clean local backup staging." }
         }
     }
     fun directory(id: String): File {
@@ -365,6 +383,11 @@ class DocumentRepository @Inject constructor(
         }
     }
     suspend fun recoverCaptures() = withContext(Dispatchers.IO) {
+        File(context.filesDir, "local-backup").listFiles().orEmpty().filter {
+            it.isDirectory && !dev.folio.scanner.backup.LocalBackupArchive.isActive(it.name)
+        }.forEach {
+            cleanLocalBackupStage(it)
+        }
         mutation.withLock {
             File(context.filesDir,"pdf-import").listFiles().orEmpty().filter {it.name !in activePdfImports}.forEach {stage ->
                 val journal=File(stage,"publication.json")
@@ -509,15 +532,27 @@ class DocumentRepository @Inject constructor(
         }
     }
     suspend fun reorder(documentId: String, ids: List<String>) = mutation.withLock {
-        activeDocument(documentId)
+        val doc = activeDocument(documentId)
         database.withTransaction {
             val existing = dao.pages(documentId)
             require(ids.size == existing.size && ids.toSet() == existing.map { it.id }.toSet()) { "Page order is invalid." }
-            ids.forEachIndexed { index, id -> dao.position(id, -index - 1) }
-            ids.forEachIndexed { index, id -> dao.position(id, index) }
-            val doc = requireNotNull(dao.document(documentId))
-            dao.save(doc.copy(pdfRevision=0, pageCount = ids.size, modifiedAt = System.currentTimeMillis()))
+            if (existing.map { it.id } != ids) publishPageOrder(doc, ids)
         }
+    }
+
+    suspend fun resetPageOrder(documentId: String) = mutation.withLock {
+        val doc = activeDocument(documentId)
+        database.withTransaction {
+            val pages = dao.pages(documentId)
+            val original = pages.inOriginalOrder()
+            if (pages != original) publishPageOrder(doc, original.map { it.id })
+        }
+    }
+
+    private suspend fun publishPageOrder(doc: Document, ids: List<String>) {
+        ids.forEachIndexed { index, id -> dao.position(id, -index - 1) }
+        ids.forEachIndexed { index, id -> dao.position(id, index) }
+        dao.save(doc.copy(pdfRevision = 0, pageCount = ids.size, modifiedAt = System.currentTimeMillis()))
     }
     suspend fun importImage(documentId: String, input: InputStream, captureId: String? = null, detectDocument: Boolean = true): String = mutation.withLock {
         withContext(Dispatchers.IO) {
@@ -544,7 +579,8 @@ class DocumentRepository @Inject constructor(
                 val originalWidth=bitmap.width; val originalHeight=bitmap.height
                 database.withTransaction {
                     val pages = dao.pages(documentId)
-                    dao.save(Page(pageId, documentId, pages.size, original.path, original.path, fallbackThumbnail.path, originalWidth, originalHeight, crop = encodeCorners(Geometry.full)))
+                    dao.save(Page(pageId, documentId, pages.size, original.path, original.path, fallbackThumbnail.path, originalWidth, originalHeight,
+                        crop = encodeCorners(Geometry.full), originalPosition = dao.nextOriginalPosition(documentId)))
                     dao.save(doc.copy(pdfRevision=0, pageCount = pages.size + 1, modifiedAt = System.currentTimeMillis()))
                 }
                 val corners = if (detectDocument) pipeline.detect(bitmap) ?: Geometry.full else Geometry.full
@@ -565,34 +601,96 @@ class DocumentRepository @Inject constructor(
         }
     }
     suspend fun crop(pageId: String, corners: List<Corner>) = edit(pageId, corners = corners)
-    suspend fun edit(pageId: String, corners: List<Corner>? = null, enhancement: Enhancement? = null, rotation: Int? = null, enqueueOcr:Boolean=true, layout: PageLayout? = null) = mutation.withLock {
+    suspend fun edit(pageId: String, corners: List<Corner>? = null, enhancement: Enhancement? = null,
+                     rotation: Int? = null, enqueueOcr: Boolean = true, layout: PageLayout? = null,
+                     sameSizeForDocument: Boolean = false) = mutation.withLock {
         withContext(Dispatchers.IO) {
-            val page = requireNotNull(dao.page(pageId)) { "Page no longer exists." }; require(page.trashedAt==null) { "Restore this page from Recycle Bin first." }
-            activeDocument(page.documentId)
-            val crop = corners ?: decodeCorners(page.crop)
-            val config = enhancement ?: Enhancement.decode(page.enhancement)
-            val angle = rotation ?: page.rotation
-            val corrected = pipeline.correct(File(page.originalImageUri), crop)
+            val page = requireNotNull(dao.page(pageId)) { "Page no longer exists." }
+            require(page.trashedAt == null) { "Restore this page from Recycle Bin first." }
+            val doc = activeDocument(page.documentId)
             val paper = layout ?: page.layout()
-            val enhanced = try { pipeline.enhance(corrected, config, angle) } finally { corrected.recycle() }
-            val result = try { pipeline.pageCanvas(enhanced, paper) } catch(failure:Throwable) { enhanced.recycle(); throw failure }
-            if(result !== enhanced) enhanced.recycle()
-            val version = UUID.randomUUID().toString()
-            val file = File(directory(page.documentId), "processed/$version.jpg")
-            val thumb = File(directory(page.documentId), "thumbnails/$version.jpg")
-            try {
-                writeJpeg(result, file); writeThumbnail(result, thumb)
-                database.withTransaction {
-                    dao.save(page.copy(processedImageUri = file.path, thumbnailUri = thumb.path, crop = encodeCorners(crop), width = result.width, height = result.height, rotation = angle, enhancement = config.encode(), pageSize = paper.size, pageFit = paper.fit, pageWidthMm = paper.widthMm, pageHeightMm = paper.heightMm))
-                    dao.clearOcr(pageId)
-                    val doc = requireNotNull(dao.document(page.documentId))
-                    dao.save(doc.copy(pdfRevision=0, modifiedAt = System.currentTimeMillis()))
-                }
-                discardUnreferenced(page.documentId, listOf(File(page.processedImageUri), File(page.thumbnailUri)))
-                if(enqueueOcr) queueOcr(pageId)
-            } catch (failure: Exception) { discardUnreferenced(page.documentId, listOf(file, thumb)); throw failure }
-            finally { result.recycle() }
+            val others = if (sameSizeForDocument) {
+                require(paper.dimensions != null) { "Choose a fixed page size." }
+                dao.pages(doc.id).filter { it.id != pageId && it.layout() != paper }
+            } else emptyList()
+            publishPageEdits(doc, listOf(page) + others, enqueueOcr) { target ->
+                if (target.id == pageId) renderPageEdit(target, paper, corners, enhancement, rotation)
+                else renderPageEdit(target, paper)
+            }
         }
+    }
+
+    suspend fun applyPageSize(documentId: String, ids: Set<String>?, layout: PageLayout) = mutation.withLock {
+        withContext(Dispatchers.IO) {
+            require(layout.dimensions != null) { "Choose a fixed page size." }
+            val doc = activeDocument(documentId)
+            val pages = dao.pages(documentId)
+            val targets = if (ids == null) pages else pages.filter { it.id in ids }
+            require(targets.isNotEmpty() && (ids == null || ids.size == targets.size)) { "Select existing pages." }
+            publishPageEdits(doc, targets.filter { it.layout() != layout }, enqueueOcr = true) {
+                renderPageEdit(it, layout)
+            }
+        }
+    }
+
+    suspend fun resetPageSizes(documentId: String) = mutation.withLock {
+        withContext(Dispatchers.IO) {
+            val doc = activeDocument(documentId)
+            require(!doc.importedPdf) { "Only scanned page sizes can be reset." }
+            val original = PageLayout()
+            val targets = dao.pages(documentId).filter { it.pageSize != original.size }
+            publishPageEdits(doc, targets, enqueueOcr = true) { renderPageEdit(it, original) }
+        }
+    }
+
+    private suspend fun publishPageEdits(doc: Document, targets: List<Page>, enqueueOcr: Boolean,
+                                         render: suspend (Page) -> Page) {
+        if (targets.isEmpty()) return
+        val results = mutableListOf<Page>()
+        fun files(pages: List<Page>) = pages.flatMap { listOf(File(it.processedImageUri), File(it.thumbnailUri)) }
+        try {
+            for (page in targets) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                results += render(page)
+            }
+            database.withTransaction {
+                results.forEach { dao.save(it); dao.clearOcr(it.id) }
+                dao.save(doc.copy(pdfRevision = 0, modifiedAt = System.currentTimeMillis()))
+            }
+        } catch (failure: Throwable) {
+            discardUnreferenced(doc.id, files(results))
+            throw failure
+        }
+        discardUnreferenced(doc.id, files(targets))
+        if (enqueueOcr) results.forEach { queueOcr(it.id) }
+    }
+
+    private suspend fun renderPageEdit(page: Page, paper: PageLayout, corners: List<Corner>? = null,
+                                       enhancement: Enhancement? = null, rotation: Int? = null): Page {
+        val crop = corners ?: decodeCorners(page.crop)
+        val config = enhancement ?: Enhancement.decode(page.enhancement)
+        val angle = rotation ?: page.rotation
+        val corrected = pipeline.correct(File(page.originalImageUri), crop)
+        val enhanced = try { pipeline.enhance(corrected, config, angle) } finally { corrected.recycle() }
+        val result = try { pipeline.pageCanvas(enhanced, paper) } catch (failure: Throwable) {
+            enhanced.recycle()
+            throw failure
+        }
+        if (result !== enhanced) enhanced.recycle()
+        val version = UUID.randomUUID().toString()
+        val root = directory(page.documentId)
+        val file = File(root, "processed/$version.jpg")
+        val thumb = File(root, "thumbnails/$version.jpg")
+        try {
+            writeJpeg(result, file)
+            writeThumbnail(result, thumb)
+            return page.copy(processedImageUri = file.path, thumbnailUri = thumb.path, crop = encodeCorners(crop),
+                width = result.width, height = result.height, rotation = angle, enhancement = config.encode(),
+                pageSize = paper.size, pageFit = paper.fit, pageWidthMm = paper.widthMm, pageHeightMm = paper.heightMm)
+        } catch (failure: Throwable) {
+            discardUnreferenced(page.documentId, listOf(file, thumb))
+            throw failure
+        } finally { result.recycle() }
     }
     suspend fun deletePages(documentId: String, ids: Set<String>) = mutation.withLock {
         val doc=activeDocument(documentId)
@@ -683,7 +781,8 @@ class DocumentRepository @Inject constructor(
                 File(page.originalImageUri).copyTo(originals); File(page.processedImageUri).copyTo(processed); File(page.thumbnailUri).copyTo(thumbnail)
                 database.withTransaction {
                     val pages = dao.pages(page.documentId)
-                    dao.save(page.copy(id = newId, position = pages.size, originalImageUri = originals.path, processedImageUri = processed.path, thumbnailUri = thumbnail.path))
+                    dao.save(page.copy(id = newId, position = pages.size, originalImageUri = originals.path, processedImageUri = processed.path,
+                        thumbnailUri = thumbnail.path, originalPosition = dao.nextOriginalPosition(page.documentId)))
                     dao.ocr(pageId)?.let { dao.save(it.copy(pageId = newId)) }
                     dao.annotations(pageId).forEach { dao.save(it.copy(id = UUID.randomUUID().toString(), pageId = newId)) }
                     val doc = requireNotNull(dao.document(page.documentId))
@@ -704,7 +803,7 @@ class DocumentRepository @Inject constructor(
             require(old.documentId == replacement.documentId && oldId != newId)
             dao.deletePage(oldId)
             androidx.work.WorkManager.getInstance(context).cancelUniqueWork("ocr-page-$oldId")
-            dao.save(replacement.copy(position = old.position, pageName = old.pageName))
+            dao.save(replacement.copy(position = old.position, pageName = old.pageName, originalPosition = old.originalPosition))
             val pages = dao.pages(old.documentId)
             pages.forEachIndexed { i, p -> dao.position(p.id, -i - 1) }
             pages.forEachIndexed { i, p -> dao.position(p.id, i) }

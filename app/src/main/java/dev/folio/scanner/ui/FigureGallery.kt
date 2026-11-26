@@ -65,15 +65,17 @@ import kotlin.math.*
                 }
             }
         }
-        Button(onClick={model.run {val retained=withContext(Dispatchers.IO) {utility.rememberedDestination("figures")};if(retained==null) folder.launch(documentsLocation) else exportTo(retained)}},enabled=ready && selected.isNotEmpty() && !exporting,modifier=Modifier.fillMaxWidth().padding(horizontal=16.dp)) {Text("Export selected figures")}
-        TextButton(onClick={folder.launch(documentsLocation)},enabled=ready && selected.isNotEmpty() && !exporting,modifier=Modifier.align(Alignment.CenterHorizontally)) {Text("Choose another destination folder")}
+        FolioActionTray {
+            Button(onClick={model.run {val retained=withContext(Dispatchers.IO) {utility.rememberedDestination("figures")};if(retained==null) folder.launch(documentsLocation) else exportTo(retained)}},enabled=ready && selected.isNotEmpty() && !exporting,modifier=Modifier.fillMaxWidth()) {Text("Export selected figures")}
+            TextButton(onClick={folder.launch(documentsLocation)},enabled=ready && selected.isNotEmpty() && !exporting,modifier=Modifier.align(Alignment.CenterHorizontally)) {Text("Choose another destination folder")}
+        }
     }
     preview?.let {figure ->
         val windowSize=LocalWindowInfo.current.containerSize
         val previewLimit=with(LocalDensity.current) {(windowSize.height.toDp()*.4f/fontScale).coerceIn(100.dp,360.dp)}
         var bounds by remember(figure.id) {mutableStateOf(figure.box)}
         val page by produceState<AnalysisPage?>(null,figure.page) {value=withContext(Dispatchers.IO) {AnalysisPage.parse(JSONObject(File(utility.folder(session,create=false),"analysis-${figure.page}.json").readText()))}}
-        AlertDialog(onDismissRequest={preview=null},title={Text("Page ${figure.page+1} · ${figure.label.replace('_',' ')}")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+        FolioDialog(onDismissRequest={preview=null},title={Text("Page ${figure.page+1} · ${figure.label.replace('_',' ')}")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)) {
             Text("Drag the corners to adjust this figure.",style=MaterialTheme.typography.bodySmall)
             page?.let {p ->BoxWithConstraints(Modifier.fillMaxWidth()) {
                 FigureBoundary(File(utility.folder(session,create=false),"analysis-${figure.page}.jpg"),p,bounds,Modifier.fillMaxWidth().height((maxWidth*p.height.toFloat()/p.width).coerceAtMost(previewLimit))) {bounds=it}

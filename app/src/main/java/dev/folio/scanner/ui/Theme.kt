@@ -4,6 +4,8 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import androidx.compose.ui.graphics.Color
@@ -12,8 +14,25 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
+internal data class FolioBlur(
+    val enabled: Boolean = true,
+    val strength: Int = 100,
+    val translucency: Int = 50
+) {
+    val multiplier: Float get() = strength / 100f
+
+    fun opacity(default: Float, minimum: Float = .32f): Float {
+        val amount = translucency / 50f
+        return if (amount <= 1f) 1f + (default - 1f) * amount
+        else default + (minimum.coerceAtMost(default) - default) * (amount - 1f)
+    }
+}
+
+internal val LocalFolioBlur = compositionLocalOf { FolioBlur() }
+
 @Composable
-fun FolioTheme(mode: String = "System", cameraOverlay: Boolean = false, content: @Composable () -> Unit) {
+fun FolioTheme(mode: String = "System", cameraOverlay: Boolean = false, blurEnabled: Boolean = true,
+    blurStrength: Int = 100, translucency: Int = 50, content: @Composable () -> Unit) {
     val dark = mode == "Dark" || mode == "AMOLED" || mode == "System" && isSystemInDarkTheme()
     val view = LocalView.current
     val base = if (android.os.Build.VERSION.SDK_INT >= 31) {
@@ -35,7 +54,9 @@ fun FolioTheme(mode: String = "System", cameraOverlay: Boolean = false, content:
             headlineMedium = TextStyle(fontFamily = FontFamily.Serif, fontSize = 28.sp, lineHeight = 34.sp),
             titleLarge = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 22.sp, lineHeight = 28.sp),
             titleMedium = TextStyle(fontWeight = FontWeight.SemiBold, fontSize = 16.sp, lineHeight = 24.sp)
-        ), content = content)
+        )) {
+        CompositionLocalProvider(LocalFolioBlur provides FolioBlur(blurEnabled, blurStrength, translucency), content = content)
+    }
 }
 
 internal fun amoledColors(base: ColorScheme): ColorScheme = base.copy(

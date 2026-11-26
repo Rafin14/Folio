@@ -53,8 +53,11 @@ data class Page(
     @ColumnInfo(defaultValue = "0") val pageHeightMm: Double = 0.0,
     @ColumnInfo(defaultValue = "NULL") val trashedAt: Long? = null,
     @ColumnInfo(defaultValue = "NULL") val trashPosition: Int? = null,
-    @ColumnInfo(defaultValue = "NULL") val trashDocumentTitle: String? = null
+    @ColumnInfo(defaultValue = "NULL") val trashDocumentTitle: String? = null,
+    @ColumnInfo(defaultValue = "0") val originalPosition: Long = position.toLong()
 )
+
+internal fun List<Page>.inOriginalOrder(): List<Page> = sortedWith(compareBy(Page::originalPosition, Page::id))
 
 @Entity(tableName = "ocr", foreignKeys = [ForeignKey(
     entity = Page::class, parentColumns = ["id"], childColumns = ["pageId"], onDelete = ForeignKey.CASCADE

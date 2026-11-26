@@ -33,6 +33,8 @@ interface DocumentDao {
     @Query("SELECT * FROM pages WHERE documentId = :id AND trashedAt IS NULL ORDER BY position")
     suspend fun pages(id: String): List<Page>
     @Query("SELECT * FROM pages WHERE documentId=:id ORDER BY position") suspend fun storedPages(id:String):List<Page>
+    @Query("SELECT COALESCE(MAX(originalPosition), -1) + 1 FROM pages WHERE documentId = :id")
+    suspend fun nextOriginalPosition(id: String): Long
     @Query("SELECT pages.* FROM pages JOIN documents ON documents.id=pages.documentId WHERE pages.trashedAt IS NOT NULL AND documents.deleting=0 ORDER BY pages.trashedAt DESC") fun observePageTrash():Flow<List<Page>>
     @Query("SELECT * FROM pages WHERE trashedAt IS NOT NULL") suspend fun trashedPages():List<Page>
     @Query("SELECT * FROM pages WHERE id = :id") suspend fun page(id: String): Page?
@@ -62,5 +64,5 @@ interface DocumentDao {
     @Query("DELETE FROM pdfs WHERE id = :id") suspend fun deletePdf(id: String)
 }
 
-@Database(entities = [Document::class, Folder::class, Page::class, OcrResult::class, OcrSearchIndex::class, Annotation::class, PdfAsset::class, BackupRecord::class], version = 8, exportSchema = true)
+@Database(entities = [Document::class, Folder::class, Page::class, OcrResult::class, OcrSearchIndex::class, Annotation::class, PdfAsset::class, BackupRecord::class], version = 9, exportSchema = true)
 abstract class FolioDatabase : RoomDatabase() { abstract fun documents(): DocumentDao }

@@ -63,9 +63,7 @@ data class BackupManifest(val id: String, val createdAt: Long, val folders: List
                 val corners = p.crop.split(';').map { part -> val xy=part.split(','); require(xy.size == 2); Corner(xy[0].toDouble(), xy[1].toDouble()) }
                 require(Geometry.valid(corners) && corners.all { it.x in 0.0..1.0 && it.y in 0.0..1.0 }) { "Invalid crop." }
             }
-            val e=p.enhancement.split('|')
-            require(e.size == 1 || e.size == 6 || e.size == 7) { "Invalid enhancement." }
-            if(e.size == 1) Enhancement(e[0]) else Enhancement(e[0],e[1].toDouble(),e[2].toDouble(),e[3].toDouble(),e[4].toDouble(),e[5].toDouble(),e.getOrNull(6)?.toDouble() ?: 0.0)
+            Enhancement.parse(p.enhancement)
             require(entry.original in assetHashes && entry.processed in assetHashes) { "Missing page asset." }
         }
         require(assets.map { it.hash }.toSet() == pages.flatMap { listOf(it.original,it.processed) }.toSet()+documents.map { it.pdfHash }.filter { it.isNotEmpty() }) { "Unrelated backup assets." }
@@ -95,7 +93,7 @@ data class BackupManifest(val id: String, val createdAt: Long, val folders: List
             .put("importedPdf",d.importedPdf).put("pdfHash",d.pdfHash).put("pdfRevision",d.pdfRevision).put("favorite",d.favorite).put("pageCount",d.pageCount).put("trashedAt",d.trashedAt ?: JSONObject.NULL) }))
         .put("pages",JSONArray(pages.sortedWith(compareBy({it.page.documentId},{it.page.position})).map { entry -> val p=entry.page
             JSONObject().put("id",p.id).put("documentId",p.documentId).put("position",p.position).put("width",p.width).put("height",p.height)
-                .put("pageName",p.pageName ?: JSONObject.NULL).put("pageSize",p.pageSize).put("pageFit",p.pageFit).put("pageWidthMm",p.pageWidthMm).put("pageHeightMm",p.pageHeightMm)
+                .put("originalPosition",p.originalPosition).put("pageName",p.pageName ?: JSONObject.NULL).put("pageSize",p.pageSize).put("pageFit",p.pageFit).put("pageWidthMm",p.pageWidthMm).put("pageHeightMm",p.pageHeightMm)
                 .put("trashedAt",p.trashedAt ?: JSONObject.NULL).put("trashPosition",p.trashPosition ?: JSONObject.NULL).put("trashDocumentTitle",p.trashDocumentTitle ?: JSONObject.NULL)
                 .put("rotation",p.rotation).put("crop",p.crop).put("enhancement",p.enhancement).put("original",entry.original).put("processed",entry.processed) }))
         .put("assets",JSONArray(assets.sortedBy { it.hash }.map { JSONObject().put("hash",it.hash).put("bytes",it.bytes).put("remoteId",it.remoteId) }))
@@ -113,7 +111,7 @@ data class BackupManifest(val id: String, val createdAt: Long, val folders: List
                 if(it.isNull("folderId")) null else it.getString("folderId"),it.getBoolean("favorite"),it.getInt("pageCount"),false,
                 if(it.isNull("trashedAt")) null else it.getLong("trashedAt"),it.optString("pdfHash"),it.optLong("pdfRevision"),it.optBoolean("importedPdf")) }
             val pages=array("pages").map { BackupPage(Page(it.getString("id"),it.getString("documentId"),it.getInt("position"),"","","",
-                it.getInt("width"),it.getInt("height"),it.getInt("rotation"),it.getString("crop"),it.getString("enhancement"),if(it.isNull("pageName")) null else it.getString("pageName"),it.optString("pageSize","Original"),it.optString("pageFit","Fit"),it.optDouble("pageWidthMm",0.0),it.optDouble("pageHeightMm",0.0),if(it.isNull("trashedAt")) null else it.getLong("trashedAt"),if(it.isNull("trashPosition")) null else it.getInt("trashPosition"),if(it.isNull("trashDocumentTitle")) null else it.getString("trashDocumentTitle")),it.getString("original"),it.getString("processed")) }
+                it.getInt("width"),it.getInt("height"),it.getInt("rotation"),it.getString("crop"),it.getString("enhancement"),if(it.isNull("pageName")) null else it.getString("pageName"),it.optString("pageSize","Original"),it.optString("pageFit","Fit"),it.optDouble("pageWidthMm",0.0),it.optDouble("pageHeightMm",0.0),if(it.isNull("trashedAt")) null else it.getLong("trashedAt"),if(it.isNull("trashPosition")) null else it.getInt("trashPosition"),if(it.isNull("trashDocumentTitle")) null else it.getString("trashDocumentTitle"), it.optLong("originalPosition", it.getLong("position")).takeIf { order -> order in 0..Int.MAX_VALUE.toLong() } ?: it.getLong("position")),it.getString("original"),it.getString("processed")) }
             val assets=array("assets").map { BackupAsset(it.getString("hash"),it.getLong("bytes"),it.getString("remoteId")) }
             val ocr=if(b.get("schema").toString() in listOf("2","3","4","5")) array("ocr").map { dev.folio.scanner.ocr.readOcr(it) } else emptyList()
             return BackupManifest(b.getString("id"),b.getLong("createdAt"),folders,docs,pages,assets,ocr).also { it.validate(remote) }

@@ -5,8 +5,25 @@ import kotlin.math.*
 data class Corner(val x: Double, val y: Double) {
     fun distance(other: Corner) = hypot(x - other.x, y - other.y)
 }
+
+internal data class CropFrame(val zoom: Float, val center: Corner)
+
 object Geometry {
     val full = listOf(Corner(0.0, 0.0), Corner(1.0, 0.0), Corner(1.0, 1.0), Corner(0.0, 1.0))
+
+    internal fun cropFrame(points: List<Corner>, width: Float, height: Float, fittedWidth: Float, fittedHeight: Float): CropFrame {
+        val left = points.minOf { it.x }
+        val top = points.minOf { it.y }
+        val right = points.maxOf { it.x }
+        val bottom = points.maxOf { it.y }
+        val zoom = minOf(
+            .94f * width / ((right - left).toFloat() * fittedWidth),
+            .94f * height / ((bottom - top).toFloat() * fittedHeight),
+            2.5f
+        ).coerceAtLeast(1f)
+        return CropFrame(zoom, Corner((left + right) / 2, (top + bottom) / 2))
+    }
+
     fun order(points: List<Corner>, width: Int = 1, height: Int = 1): List<Corner> {
         require(points.size == 4 && points.distinct().size == 4) { "Select four different corners." }
         require(points.all { it.x.isFinite() && it.y.isFinite() })

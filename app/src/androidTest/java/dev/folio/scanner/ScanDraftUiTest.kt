@@ -7,6 +7,8 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.test.platform.app.InstrumentationRegistry
 import dagger.hilt.android.EntryPointAccessors
 import dev.folio.scanner.pdf.PdfWorkerDependencies
+import dev.folio.scanner.processing.Corner
+import dev.folio.scanner.processing.Geometry
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Rule
@@ -21,7 +23,11 @@ class ScanDraftUiTest {
         val bitmap=Bitmap.createBitmap(600,800,Bitmap.Config.ARGB_8888).apply { eraseColor(Color.GRAY) }
         val bytes=try { ByteArrayOutputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG,95,it); it.toByteArray() } } finally { bitmap.recycle() }
         val doc=runBlocking { repo.create("Unfinished scan UI") }
-        val draft=runBlocking { repo.stageScan(doc,ByteArrayInputStream(bytes)) }
+        val draft=runBlocking {
+            repo.stageScan(doc,ByteArrayInputStream(bytes)).also { id ->
+                repo.cropDraft(id, Geometry.full.map { Corner(.25 + it.x / 2, .25 + it.y / 2) })
+            }
+        }
         fun keepEditing(back: String) {
             compose.onNodeWithContentDescription(back).performClick()
             compose.onNodeWithText("Discard this scan?").assertIsDisplayed()
@@ -34,7 +40,12 @@ class ScanDraftUiTest {
             compose.waitUntil(15000) { compose.onAllNodesWithText("Continue unfinished scan").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithText("Continue unfinished scan").performClick()
             compose.waitUntil(15000) { compose.onAllNodes(hasText("Confirm crop") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithText("Fit image").assertIsDisplayed().performClick()
+            compose.onNodeWithText("Fit image").assertDoesNotExist()
+            compose.onNodeWithText("Fit crop").assertIsDisplayed().performClick()
+            compose.onNodeWithText("Fit image").assertIsDisplayed()
             keepEditing("Cancel crop") // Original capture is unsaved even without adjustments.
+            compose.onNodeWithText("Full image").assertIsDisplayed().performClick()
             val density=compose.activity.resources.displayMetrics.density
             compose.onNodeWithContentDescription("Crop corners").performTouchInput {
                 val rect=dev.folio.scanner.ui.fit(width.toFloat(),height.toFloat(),.75f,24f*density)
@@ -47,7 +58,13 @@ class ScanDraftUiTest {
             compose.onNodeWithText("Done").performClick(); keepEditing("Cancel crop")
             compose.onNodeWithText("Confirm crop").performClick(); ready(); keepEditing("Cancel editing")
             compose.onNodeWithText("Grayscale").performScrollTo().performClick(); ready(); keepEditing("Cancel editing")
-            compose.onNodeWithText("Adjustments").performClick()
+            compose.onNodeWithText("Lighten").performScrollTo().performClick().assertIsSelected()
+            compose.onNodeWithContentDescription("Undo filter edit").performClick()
+            compose.onNodeWithText("Lighten").assertIsNotSelected()
+            compose.onNodeWithContentDescription("Redo filter edit").performClick()
+            compose.onNodeWithText("Lighten").assertIsSelected()
+            compose.onNodeWithText("Grayscale").performScrollTo().assertIsSelected()
+            compose.onNodeWithText("Adjustments").performScrollTo().performClick()
         compose.onNodeWithContentDescription("Brightness").performScrollTo().performSemanticsAction(SemanticsActions.SetProgress) { it(20f) }; ready(); compose.onNodeWithText("Done").performClick(); keepEditing("Cancel editing")
             compose.onNodeWithText("Rotate",substring=false).performScrollTo().performClick(); ready(); keepEditing("Cancel editing")
             compose.activityRule.scenario.recreate(); ready()

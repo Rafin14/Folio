@@ -36,7 +36,7 @@ class ScannerLayoutTest {
                 CompositionLocalProvider(LocalDensity provides Density(density.density,if(large) 1.6f else 1f)) {
                     FolioTheme(theme) {
                         if(cropping) CropScreen(draft,model,{}, { cropping=false },draft=true)
-                        else PageEditor(draft,model,{}, { cropping=true },draft=true)
+                        else PageEditor(draft,model,{}, { cropping=true },draft=true, retake={})
                     }
                 }
             }
@@ -60,21 +60,39 @@ class ScannerLayoutTest {
                 page.assertIsDisplayed()
                 val root=compose.onRoot().fetchSemanticsNode().boundsInRoot
                 assertTrue("Preview should use most of the height",page.fetchSemanticsNode().boundsInRoot.height>root.height*.5f)
+                assertTrue("Comparison must leave the paper clear",
+                    compose.onNodeWithText("After").fetchSemanticsNode().boundsInRoot.top >= page.fetchSemanticsNode().boundsInRoot.bottom)
+                val compareBounds = compose.onNodeWithText("After").fetchSemanticsNode().boundsInRoot
+                val undoBounds = compose.onNodeWithContentDescription("Undo filter edit").fetchSemanticsNode().boundsInRoot
+                assertTrue("Comparison and history share the bottom tray",
+                    compareBounds.right <= undoBounds.left && kotlin.math.abs(compareBounds.center.y - undoBounds.center.y) < 8f)
+                val acceptBounds = compose.onNodeWithText("Accept page").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+                if (!font) {
+                    assertTrue("Accept page stays on the same row at standard text size",
+                        kotlin.math.abs(acceptBounds.center.y - undoBounds.center.y) < 8f)
+                    compose.onNodeWithText("Retake").assertIsDisplayed()
+                    compose.onNodeWithText("Page size").assertIsDisplayed()
+                }
+                if (mode == "AMOLED") screenshot("comparison-${if(font) "large" else "normal"}")
                 custom(page,"Zoom in")
                 page.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Zoom 1.5 times"))
                 custom(page,"Reset zoom")
-                compose.onNodeWithText("After").performClick(); compose.onNodeWithContentDescription("Original page preview").assertIsDisplayed()
-                compose.onNodeWithText("Before").performClick()
+                compose.onNodeWithText("After").assertIsSelected()
+                compose.onNodeWithText("Before").assertIsNotSelected().performClick().assertIsSelected()
+                compose.onNodeWithContentDescription("Original page preview").assertIsDisplayed()
+                compose.onNodeWithText("After").assertIsNotSelected().performClick().assertIsSelected()
                 compose.onNodeWithText("Adjustments").performScrollTo().performClick()
                 compose.waitForIdle()
+                compose.onNodeWithText("After").assertIsDisplayed()
+                assertEquals(compareBounds, compose.onNodeWithText("After").fetchSemanticsNode().boundsInRoot)
                 custom(page,"Zoom in"); custom(page,"Reset zoom")
                 val previewBounds=page.fetchSemanticsNode().boundsInRoot
                 val controlsBounds=compose.onNodeWithContentDescription("Adjustment controls").fetchSemanticsNode().boundsInRoot
                 assertTrue("Controls must not cover preview",previewBounds.right<=controlsBounds.left+1 || previewBounds.bottom<=controlsBounds.top+1)
+                screenshot("${mode.lowercase()}-${if(font) "large" else "normal"}")
                 compose.onNodeWithContentDescription("Shadow normalization").performScrollTo().assertIsDisplayed()
                 assertEquals("Scrolling controls must not move preview",previewBounds,page.fetchSemanticsNode().boundsInRoot)
                 compose.onNodeWithContentDescription("Brightness").performScrollTo().assertIsDisplayed()
-                screenshot("${mode.lowercase()}-${if(font) "large" else "normal"}")
                 compose.onNodeWithContentDescription("Brightness").performSemanticsAction(SemanticsActions.SetProgress) { it(20f) }
                 compose.waitUntil(30000) { compose.onAllNodes(hasText("Accept page") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
                 compose.onNodeWithText("Done").assertIsDisplayed().performClick()

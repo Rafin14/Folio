@@ -136,12 +136,12 @@ import java.io.File
                         Button(onClick={ocrOptions=false;selected=null;utility.analyze(session,mode=ocrMode,rerun=true,replaceOcr=true)},enabled=count>0 && active==null && exportActive==null && !busy) {Text("OCR Entire Document")}
                     }
     }
-    Scaffold(modifier=Modifier.imePadding(),topBar={TopAppBar(title={Text(if(fullscreen) "Extracted text" else screenTitle)},navigationIcon={IconButton(onClick=::close) {Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back")}},actions={
+    Scaffold(modifier=Modifier.imePadding(),topBar={FolioTopBar(title={Text(if(fullscreen) "Extracted text" else screenTitle)},navigationIcon={IconButton(onClick=::close) {Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back")}},actions={
         if(session.isNotEmpty() && tool=="ocr") IconButton(onClick={searchOpen=!searchOpen;if(!searchOpen) query=""}) {Icon(Icons.Outlined.Search,"Search OCR PDF")}
         if(displayedPage!=null && tool=="ocr") IconButton(onClick={copy(displayedPage.text)}) {Icon(Icons.Outlined.ContentCopy,"Copy page text")}
         if(displayedPage!=null && tool=="ocr") IconButton(onClick={fullscreen=!fullscreen;textTab=true}) {Icon(if(fullscreen) Icons.Outlined.FullscreenExit else Icons.Outlined.Fullscreen,"Fullscreen text")}
         if(session.isNotEmpty()) Box {
-            IconButton(onClick={toolsMenu=true}) {Icon(Icons.Outlined.MoreVert,"Analysis tools")}
+            FolioOverflowButton("Analysis tools", { toolsMenu = true })
             FolioOverflowMenu(toolsMenu,{toolsMenu=false},screenTitle) {
 
                 listOf("OCR PDF" to "ocr","Images and figures" to "figures","PDF to Word" to "word").forEach {(label,key) ->FolioMenuItem(label=label,enabled=active==null && exportActive==null,onClick={tool=key;fullscreen=false;toolsMenu=false;model.run {withContext(Dispatchers.IO) {utility.save(session,utility.session(session).put("analysisTool",key));if(key!="ocr") utility.analyze(session,mode=OcrMode.LAYOUT_AWARE)}}})}
@@ -153,7 +153,7 @@ import java.io.File
         Column(Modifier.fillMaxSize().padding(padding),verticalArrangement=Arrangement.spacedBy(8.dp)) {
             if(searchOpen && tool=="ocr") Column(Modifier.padding(horizontal=12.dp)) {
                 Row(verticalAlignment=Alignment.CenterVertically) {
-                    OutlinedTextField(query,{query=it},singleLine=true,placeholder={Text("Search PDF text")},modifier=Modifier.weight(1f),trailingIcon={if(query.isNotEmpty()) IconButton(onClick={query=""}) {Icon(Icons.Outlined.Clear,"Clear PDF search")}})
+                    OutlinedTextField(query,{query=it},singleLine=true,placeholder={Text("Search PDF text")},modifier=Modifier.weight(1f),shape=MaterialTheme.shapes.medium,trailingIcon={if(query.isNotEmpty()) IconButton(onClick={query=""}) {Icon(Icons.Outlined.Clear,"Clear PDF search")}})
                     IconButton(onClick={searchOpen=false;query=""}) {Icon(Icons.Outlined.Close,"Close PDF search")}
                 }
                 Row(verticalAlignment=Alignment.CenterVertically) {
@@ -215,15 +215,17 @@ import java.io.File
                     }} else AnalysisOverlay(File(utility.folder(session,create=false),"analysis-$pageIndex.jpg"),displayedPage,Modifier.fillMaxSize(),showBounds,pageMatches.flatMap {it.hits}.map {it.box},focusedHits.map {it.box}) {selected=it}
                     }
                 } else Box(Modifier.weight(1f).fillMaxWidth(),contentAlignment=Alignment.Center) {Text(if(active==null) "Start or retry analysis to read this page." else "This page is being prepared…",Modifier.padding(24.dp))}
-                if(!fullscreen) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal=16.dp,vertical=8.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick={model.run {val text=withContext(Dispatchers.IO) {buildString {repeat(count) {i ->append(AnalysisPage.parse(JSONObject(ocrResultFile(utility.folder(session,create=false),i).readText())).text);append("\n\n");require(length<=200000) {"Too much text for the clipboard. Export TXT instead."}}}};copy(text)}},enabled=ready) {Text("Copy all text")}
-                    Button(onClick={export.launch("$title.txt")},enabled=ready && exportActive==null) {Text("Export TXT")}
+                if(!fullscreen) FolioActionTray {
+                    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick={model.run {val text=withContext(Dispatchers.IO) {buildString {repeat(count) {i ->append(AnalysisPage.parse(JSONObject(ocrResultFile(utility.folder(session,create=false),i).readText())).text);append("\n\n");require(length<=200000) {"Too much text for the clipboard. Export TXT instead."}}}};copy(text)}},enabled=ready,modifier=Modifier.weight(1f)) {Text("Copy all text")}
+                        Button(onClick={export.launch("$title.txt")},enabled=ready && exportActive==null,modifier=Modifier.weight(1f)) {Text("Export TXT")}
+                    }
                 }
                 }
             }
         }
     }
-    if(ocrOptions) ModalBottomSheet(onDismissRequest={ocrOptions=false},sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true)) {
+    if(ocrOptions) FolioSheet(onDismissRequest={ocrOptions=false}) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
             Text("OCR options",style=MaterialTheme.typography.titleMedium)
             OcrControls()
@@ -232,12 +234,12 @@ import java.io.File
             Spacer(Modifier.navigationBarsPadding())
         }
     }
-    if(discard) AlertDialog(onDismissRequest={discard=false},title={Text("Leave with unsaved changes?")},text={Text("Remove this temporary PDF copy and its analysis results. Your source PDF, Folio documents and exported files will remain unchanged.")},confirmButton={TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick=leave@{if(leaving) return@leave;val id=session;leaving=true;model.run {try {utility.cancelAndDiscard(id);discard=false;session="";back()} finally {leaving=false}}},enabled=!busy) {Text(if(active!=null || exportActive!=null) "Discard and Leave" else "Discard Changes and Leave")}},dismissButton={TextButton(onClick={discard=false}) {Text(if(active!=null || exportActive!=null) "Continue Processing" else "Continue Editing")}})
-    if(diagnostics) AlertDialog(onDismissRequest={diagnostics=false},title={Text("Execution details")},text={SelectionContainer {Text(page?.json()?.optString("diagnostics").orEmpty().ifBlank {"Execution details are available after a page is analyzed."},Modifier.heightIn(max=320.dp).verticalScroll(rememberScrollState()))}},confirmButton={TextButton(onClick={diagnostics=false}) {Text("Close")}})
+    if(discard) FolioDialog(onDismissRequest={discard=false},title={Text("Leave with unsaved changes?")},text={Text("Remove this temporary PDF copy and its analysis results. Your source PDF, Folio documents and exported files will remain unchanged.")},confirmButton={TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick=leave@{if(leaving) return@leave;val id=session;leaving=true;model.run {try {utility.cancelAndDiscard(id);discard=false;session="";back()} finally {leaving=false}}},enabled=!busy) {Text(if(active!=null || exportActive!=null) "Discard and Leave" else "Discard Changes and Leave")}},dismissButton={TextButton(onClick={discard=false}) {Text(if(active!=null || exportActive!=null) "Continue Processing" else "Continue Editing")}})
+    if(diagnostics) FolioDialog(onDismissRequest={diagnostics=false},title={Text("Execution details")},text={SelectionContainer {Text(page?.json()?.optString("diagnostics").orEmpty().ifBlank {"Execution details are available after a page is analyzed."},Modifier.heightIn(max=320.dp).verticalScroll(rememberScrollState()))}},confirmButton={TextButton(onClick={diagnostics=false}) {Text("Close")}})
     if(source) PdfSourceDialog(screenTitle,{source=false;picker.launch(arrayOf("application/pdf"))},{source=false;managed=true},{source=false})
     if(managed) ManagedPdfChooser(model,{managed=false}) {id ->model.run {val chosen=utility.openManaged(id);managed=false;start(chosen)}}
-    if(input.isNotEmpty()) AlertDialog(onDismissRequest={input="";password=""},title={Text("Open PDF")},text={OutlinedTextField(password,{password=it},label={Text("Owner password, if needed")},singleLine=true,visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation())},confirmButton={Button(onClick={model.run {val chosen=utility.open("analysis",listOf(android.net.Uri.parse(input)),password);input="";password="";start(chosen)}},enabled=!busy) {Text("Open")}},dismissButton={TextButton(onClick={input="";password=""}) {Text("Cancel")}})
-    selected?.let {region ->ModalBottomSheet(onDismissRequest={selected=null}) {Column(Modifier.fillMaxWidth().padding(24.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+    if(input.isNotEmpty()) FolioDialog(onDismissRequest={input="";password=""},title={Text("Open PDF")},text={OutlinedTextField(password,{password=it},label={Text("Owner password, if needed")},singleLine=true,visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation())},confirmButton={Button(onClick={model.run {val chosen=utility.open("analysis",listOf(android.net.Uri.parse(input)),password);input="";password="";start(chosen)}},enabled=!busy) {Text("Open")}},dismissButton={TextButton(onClick={input="";password=""}) {Text("Cancel")}})
+    selected?.let {region ->FolioSheet(onDismissRequest={selected=null}) {Column(Modifier.fillMaxWidth().padding(24.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
         Text(region.label.replace('_',' '),style=MaterialTheme.typography.titleMedium)
         SelectionContainer {Text(region.text.ifBlank {"No text in this region."},Modifier.heightIn(max=280.dp).verticalScroll(rememberScrollState()))}
         OutlinedButton(onClick={copy(region.text)},enabled=region.text.isNotBlank()) {Text("Copy region text")}

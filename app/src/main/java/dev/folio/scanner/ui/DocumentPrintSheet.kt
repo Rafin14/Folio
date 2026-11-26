@@ -49,7 +49,7 @@ internal fun DocumentPrintSheet(doc:Document,pages:List<Page>,model:LibraryViewM
         catch(failure:Exception) { android.util.Log.e("Folio print","Android print handoff failed",failure); error="Could not open Android printing. Retry or use PDF export."; operation="" }
         finally { snapshot?.delete() }
     }
-    ModalBottomSheet(onDismissRequest=::close) {
+    FolioSheet(onDismissRequest=::close) {
         Column(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=12.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
             Text("Print document",style=MaterialTheme.typography.titleLarge)
             Text("Pages keep their proportions and fit the paper chosen in Android printing.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)

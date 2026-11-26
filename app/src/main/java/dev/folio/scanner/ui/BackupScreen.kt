@@ -11,6 +11,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.CloudDone
+import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -57,11 +58,14 @@ fun BackupScreen(repository:FolioBackupRepository,back:()->Unit) {
             }; pendingEmail=""; inspecting=false
         } else { pendingEmail=""; error="Google Drive permission was not granted. Your documents remain on this device." }
     }
-    Scaffold(topBar={ TopAppBar(title={ Text("Google Drive Backup") },navigationIcon={ IconButton(onClick=back) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back") } }) }) { padding ->
+    Scaffold(topBar={ FolioTopBar(title={ Text("Google Drive Backup") },navigationIcon={ IconButton(onClick=back) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back") } }) }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(horizontal=20.dp,vertical=12.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
-            Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-                Icon(Icons.Outlined.CloudDone,null,tint=MaterialTheme.colorScheme.primary)
-                Column { Text(state.status,style=MaterialTheme.typography.titleMedium); Text(state.email.ifEmpty { "Backup is optional" },style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant) }
+            FolioPanel {
+                Row(Modifier.padding(16.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+                    Icon(if (state.email.isEmpty()) Icons.Outlined.CloudOff else Icons.Outlined.CloudDone,
+                        null,tint=MaterialTheme.colorScheme.primary)
+                    Column { Text(state.status,style=MaterialTheme.typography.titleMedium); Text(state.email.ifEmpty { "Backup is optional" },style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
             }
             if(busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             val accountDeletions=deletions.filter { it.key.startsWith("${state.email}:delete:") }
@@ -85,10 +89,15 @@ fun BackupScreen(repository:FolioBackupRepository,back:()->Unit) {
             if(state.email.isNotEmpty()) {
                 HorizontalDivider()
                 if(!state.backupUnlocked) Text("Check for an existing Folio backup before uploading. Restore it if found; if no backup exists, uploads can be enabled. Signing in does not upload or replace your Drive backup.",style=MaterialTheme.typography.bodyMedium)
-                BackupToggle("Automatic backup",if(!state.backupUnlocked) "Check for a backup or restore first" else if(cloudBlocked) "Paused by cloud deletion. Back Up Now can restart after completion." else "Upload changes in the background",state.automatic,!busy && state.backupUnlocked && !cloudBlocked) { enabled ->
-                    if(enabled) confirmation="automatic" else repository.automatic(false)
+                FolioPanel {
+                    Column(Modifier.padding(horizontal=16.dp, vertical=8.dp)) {
+                        BackupToggle("Automatic backup",if(!state.backupUnlocked) "Check for a backup or restore first" else if(cloudBlocked) "Paused by cloud deletion. Back Up Now can restart after completion." else "Upload changes in the background",state.automatic,!busy && state.backupUnlocked && !cloudBlocked) { enabled ->
+                            if(enabled) confirmation="automatic" else repository.automatic(false)
+                        }
+                        HorizontalDivider(Modifier.padding(vertical=6.dp))
+                        BackupToggle("Wi-Fi only","Wait for an unmetered connection",state.wifiOnly,!busy && !state.running,repository::wifiOnly)
+                    }
                 }
-                BackupToggle("Wi-Fi only","Wait for an unmetered connection",state.wifiOnly,!busy && !state.running,repository::wifiOnly)
                 HorizontalDivider()
                 Text("Last successful backup",style=MaterialTheme.typography.labelLarge)
                 Text(if(state.lastBackup==0L) "No backup yet" else DateFormat.getDateTimeInstance(DateFormat.MEDIUM,DateFormat.SHORT).format(Date(state.lastBackup)))
@@ -115,15 +124,18 @@ fun BackupScreen(repository:FolioBackupRepository,back:()->Unit) {
             }
             val message=error.ifEmpty { state.error }
             if(message.isNotEmpty()) Text(message,color=if(state.status=="Backup pending") MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodyMedium)
-            HorizontalDivider()
-            Text("Local first",style=MaterialTheme.typography.titleSmall)
-            Text("Folio works offline. After you authorize backup, originals, edited pages, stored extracted text and document metadata—including Recycle Bin—are uploaded to your visible Folio Backup folder. Temporary OCR images, analytics and unrelated files are excluded.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-            Text("Drive transfer uses HTTPS. Backups are not encrypted by Folio before upload.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            FolioPanel {
+                Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
+                    Text("Local first",style=MaterialTheme.typography.titleSmall)
+                    Text("Folio works offline. After you authorize backup, originals, edited pages, stored extracted text and document metadata—including Recycle Bin—are uploaded to your visible Folio Backup folder. Temporary OCR images, analytics and unrelated files are excluded.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Drive transfer uses HTTPS. Backups are not encrypted by Folio before upload.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
     }
     if(confirmation.isNotEmpty() && (confirmation!="restore" || preview!=null)) {
         val mode=confirmation
-        AlertDialog(onDismissRequest={ confirmation=""; preview=null },title={ Text(when(mode) { "automatic" -> "Enable automatic backup?"; "manual" -> "Back up your Folio library?"; "disconnect" -> "Disconnect Google Account?"; else -> "Restore this backup?" }) },text={ Text(when(mode) {
+        FolioDialog(onDismissRequest={ confirmation=""; preview=null },title={ Text(when(mode) { "automatic" -> "Enable automatic backup?"; "manual" -> "Back up your Folio library?"; "disconnect" -> "Disconnect Google Account?"; else -> "Restore this backup?" }) },text={ Text(when(mode) {
             "automatic","manual" -> "Upload all saved documents, retained originals, edited images, stored extracted text, folders and Recycle Bin to ${state.email}. Future changes upload automatically only if you enable automatic backup."
             "disconnect" -> "Backups will stop. Local documents and the existing Drive backup will be kept."
             else -> preview!!.let { "${it.manifest.documents.size} documents · ${it.manifest.pages.size} pages\n${DateFormat.getDateTimeInstance().format(Date(it.manifest.createdAt))}\n\nAll files are validated first. Existing local documents are kept. Active document names must be unique; rename a conflicting local document before restoring." }

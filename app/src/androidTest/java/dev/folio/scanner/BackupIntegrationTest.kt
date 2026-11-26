@@ -16,6 +16,52 @@ import java.io.*
 import java.util.UUID
 
 class BackupIntegrationTest {
+    @Test fun localArchiveRoundTripAndCorruptionDoNotReplaceLocalDocuments()=runBlocking {
+        fixture { db, docs, _, _ ->
+            val pipeline = ImagePipeline(context)
+            val archive = LocalBackupArchive(context, docs, pipeline)
+            val output = File.createTempFile("local-backup-", ".zip", context.cacheDir)
+            val bad = File.createTempFile("bad-backup-", ".zip", context.cacheDir)
+            try {
+                val doc = docs.create("Local archive fixture")
+                val input = image(Color.BLUE, 300, 400)
+                val page = docs.importImage(doc, ByteArrayInputStream(input), detectDocument = false)
+                val layout = PageLayout("A5")
+                docs.applyPageSize(doc, setOf(page), layout)
+                val uri = android.net.Uri.fromFile(output)
+                assertEquals(1, archive.export(uri))
+                assertTrue(runCatching { archive.restore(uri) }.exceptionOrNull()?.message.orEmpty().contains("Rename the existing document"))
+                assertEquals(1, db.documents().allDocuments().size)
+                docs.rename(doc, "Kept copy")
+                java.util.zip.ZipInputStream(output.inputStream()).use { original ->
+                    java.util.zip.ZipOutputStream(bad.outputStream()).use { damaged ->
+                        while (true) {
+                            val entry = original.nextEntry ?: break
+                            damaged.putNextEntry(java.util.zip.ZipEntry(entry.name))
+                            val bytes = original.readBytes()
+                            if (entry.name.startsWith("assets/")) bytes[0] = (bytes[0].toInt() xor 1).toByte()
+                            damaged.write(bytes)
+                            damaged.closeEntry()
+                        }
+                    }
+                }
+                assertEquals("Backup asset checksum failed.",
+                    runCatching { archive.restore(android.net.Uri.fromFile(bad)) }.exceptionOrNull()?.message)
+                assertEquals(1, db.documents().allDocuments().size)
+                assertEquals(1, archive.restore(uri))
+                val restored = db.documents().allDocuments().single { it.title == "Local archive fixture" }
+                assertNotEquals(doc, restored.id)
+                val restoredPage = db.documents().pages(restored.id).single()
+                assertArrayEquals(input, File(restoredPage.originalImageUri).readBytes())
+                assertEquals(layout, restoredPage.layout())
+            } finally {
+                pipeline.close()
+                output.delete()
+                bad.delete()
+            }
+        }
+    }
+
     @Test fun unchangedBackupsReuseManifestAndRetentionSurvivesInterruptionWithoutDeletingAssets()=runBlocking {
         fixture { db,docs,backup,drive ->
             val id=docs.create("Retention fixture")

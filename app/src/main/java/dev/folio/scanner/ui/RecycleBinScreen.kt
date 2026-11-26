@@ -53,26 +53,32 @@ internal fun RecycleBinScreen(model: LibraryViewModel,back: ()->Unit) {
     var removal by rememberSaveable { mutableStateOf(listOf<String>()) }
     var emptying by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(entries) { selected=selected.filter { it in entries } }
-    Scaffold(topBar={ TopAppBar(title={ Text("Recycle Bin") },navigationIcon={ IconButton(onClick=back) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back") } },actions={
+    val backdrop = rememberDockBackdrop(entries.isNotEmpty())
+    Scaffold(topBar={ FolioTopBar(title={ Text("Recycle Bin") },navigationIcon={ IconButton(onClick=back) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back") } },actions={
         IconButton(enabled=entries.isNotEmpty() && !busy,onClick={ removal=entries; emptying=true }) { Icon(Icons.Outlined.DeleteForever,"Empty Recycle Bin") }
-    }) }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
+    }) }, bottomBar = {
+        if (entries.isNotEmpty()) FolioActionTray(Modifier.navigationBarsPadding(), backdrop) {
+            Row(verticalAlignment=Alignment.CenterVertically) {
+                Checkbox(selected.size==entries.size,onCheckedChange={ selected=if(it) entries else emptyList() },enabled=!busy,modifier=Modifier.semantics { contentDescription="Select all recycled documents" })
+                Text("${selected.size} selected", style=MaterialTheme.typography.labelLarge)
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton(enabled=selected.isNotEmpty() && !busy,onClick={ restore(selected.toSet()) },modifier=Modifier.weight(1f)) { Text("Restore selected") }
+                TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),enabled=selected.isNotEmpty() && !busy,onClick={ removal=selected; emptying=false },modifier=Modifier.weight(1f)) { Text("Delete selected") }
+            }
+        }
+    }) { padding ->
+        Column(Modifier.fillMaxSize().dockContentPadding(padding, entries.isNotEmpty()).then(backdrop?.source ?: Modifier)) {
             Text("Documents and pages are deleted permanently after 60 days.",Modifier.padding(horizontal=16.dp,vertical=8.dp),style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
             val pending=driveDeletions.count { it.driveRemovalPending }
             if(pending>0) Text("Deleted from this device · $pending Google Drive removal${if(pending==1) "" else "s"} pending. Reconnect the backup account if needed.",Modifier.padding(horizontal=16.dp,vertical=8.dp),style=MaterialTheme.typography.bodySmall)
             else if(deletedHere) Text(if(driveDeletions.any { it.state=="delete-complete" && it.hash in deletedIds }) "Deleted from this device · Associated backups removed from Google Drive" else "Deleted from this device",Modifier.padding(16.dp),style=MaterialTheme.typography.bodySmall)
             if(driveDeletions.any { it.state=="delete-review" }) Text("A backup changed. Its Drive files have been kept for review.",Modifier.padding(horizontal=16.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error)
-            if(entries.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),verticalAlignment=Alignment.CenterVertically) {
-                Checkbox(selected.size==entries.size,onCheckedChange={ selected=if(it) entries else emptyList() },enabled=!busy,modifier=Modifier.semantics { contentDescription="Select all recycled documents" })
-                Text("${selected.size} selected")
-                TextButton(enabled=selected.isNotEmpty() && !busy,onClick={ restore(selected.toSet()) }) { Text("Restore selected") }
-                TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),enabled=selected.isNotEmpty() && !busy,onClick={ removal=selected; emptying=false }) { Text("Delete selected") }
-            }
             if(entries.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(),contentAlignment=Alignment.Center) { Text("Recycle Bin is empty",style=MaterialTheme.typography.titleMedium) }
-            else LazyColumn(Modifier.weight(1f),contentPadding=PaddingValues(12.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+            else LazyColumn(Modifier.weight(1f),contentPadding=PaddingValues(start=12.dp,top=8.dp,end=12.dp,bottom=padding.calculateBottomPadding()+12.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                 items(pages,key={ "page:${it.id}" }) { page ->
                     val key="page:${page.id}"
-                    Column {
+                    FolioPanel(selected=key in selected) { Column(Modifier.padding(8.dp)) {
                         Row(verticalAlignment=Alignment.CenterVertically) {
                             Checkbox(key in selected,onCheckedChange={ selected=if(it) selected+key else selected-key },enabled=!busy,modifier=Modifier.semantics { contentDescription="Select recycled page ${page.id}" })
                             androidx.compose.foundation.Image(bitmap=remember(page.thumbnailUri) { android.graphics.BitmapFactory.decodeFile(page.thumbnailUri)?.asImageBitmap() ?: androidx.core.graphics.createBitmap(1,1).asImageBitmap() },contentDescription="Recycled page thumbnail",modifier=Modifier.size(56.dp,76.dp).contentOutline())
@@ -88,11 +94,10 @@ internal fun RecycleBinScreen(model: LibraryViewModel,back: ()->Unit) {
                             TextButton(enabled=!busy && docs.none { it.id==page.documentId },onClick={ restore(setOf(key)) },modifier=Modifier.semantics { contentDescription="Restore page ${page.id}" }) { Text("Restore") }
                             TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),enabled=!busy,onClick={ removal=listOf(key); emptying=false },modifier=Modifier.semantics { contentDescription="Permanently delete page ${page.id}" }) { Text("Delete permanently") }
                         }
-                        HorizontalDivider()
-                    }
+                    } }
                 }
                 items(docs,key={ it.id }) { doc ->
-                    Column {
+                    FolioPanel(selected=doc.id in selected) { Column(Modifier.padding(8.dp)) {
                         Row(verticalAlignment=Alignment.CenterVertically) {
                             Checkbox(doc.id in selected,onCheckedChange={ selected=if(it) selected+doc.id else selected-doc.id },enabled=!busy,modifier=Modifier.semantics { contentDescription="Select ${doc.title}" })
                             DocumentCover(doc,model,Modifier.size(56.dp,76.dp))
@@ -107,14 +112,13 @@ internal fun RecycleBinScreen(model: LibraryViewModel,back: ()->Unit) {
                             TextButton(enabled=!busy,onClick={ restore(setOf(doc.id)) },modifier=Modifier.semantics { contentDescription="Restore ${doc.title}" }) { Text("Restore") }
                             TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),enabled=!busy,onClick={ removal=listOf(doc.id); emptying=false },modifier=Modifier.semantics { contentDescription="Permanently delete ${doc.title}" }) { Text("Delete permanently") }
                         }
-                        HorizontalDivider()
-                    }
+                    } }
                 }
             }
         }
     }
     conflict?.let { doc -> NameDialog("Restore with another name","Document name",restoreNames[doc.id] ?: doc.title,busy,{ conflict=null },validate={ documentNameConflict(it,library.documents+docs.filter { d -> d.id in restoreIds && d.id!=doc.id }.map { d -> d.copy(title=restoreNames[d.id] ?: d.title,trashedAt=null) }) }) { name -> restore(restoreIds,restoreNames+(doc.id to name)) } }
-    if(removal.isNotEmpty()) AlertDialog(onDismissRequest={ if(!busy) removal=emptyList() },title={ Text(if(emptying) "Empty Recycle Bin?" else "Delete permanently?") },text={ Text("${removal.size} selected items and their associated assets will be removed from this device. Associated Google Drive backups will also be removed when the account is connected. This cannot be undone.") },confirmButton={
+    if(removal.isNotEmpty()) FolioDialog(onDismissRequest={ if(!busy) removal=emptyList() },title={ Text(if(emptying) "Empty Recycle Bin?" else "Delete permanently?") },text={ Text("${removal.size} selected items and their associated assets will be removed from this device. Associated Google Drive backups will also be removed when the account is connected. This cannot be undone.") },confirmButton={
         TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),enabled=!busy,onClick={ val ids=removal.toSet(); model.run { val docIds=ids.filter { !it.startsWith("page:") }.toSet(); val pageIds=ids.filter { it.startsWith("page:") }.map { it.removePrefix("page:") }.toSet(); if(docIds.isNotEmpty()) model.repository.permanentlyDelete(docIds); if(pageIds.isNotEmpty()) model.repository.permanentlyDeletePages(pageIds); model.backups.enqueueDeletions(); deletedHere=true; deletedIds=ids.toList(); removal=emptyList(); selected=emptyList() } }) { Text(if(emptying) "Empty Recycle Bin" else "Delete permanently") }
     },dismissButton={ TextButton(enabled=!busy,onClick={ removal=emptyList() }) { Text("Cancel") } })
 }

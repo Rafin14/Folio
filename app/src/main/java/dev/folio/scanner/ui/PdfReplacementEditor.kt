@@ -49,8 +49,9 @@ internal fun PdfReplacementPagePicker(file:File,model:LibraryViewModel,cancel:()
             preview=bitmap; renderedPage=page; ready=true
         } catch(t:CancellationException) { throw t } catch(t:Exception) { error="Could not preview this PDF page." }
     }
-    Scaffold(topBar={ TopAppBar(title={ Text("Choose PDF page") },navigationIcon={ TextButton(onClick=cancel,enabled=!busy) { Text("Cancel") } }) },bottomBar={
-        Column(Modifier.navigationBarsPadding().padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+    Scaffold(topBar={ FolioTopBar(title={ Text("Choose PDF page") },navigationIcon={ TextButton(onClick=cancel,enabled=!busy) { Text("Cancel") } }) },bottomBar={
+        FolioActionTray(Modifier.navigationBarsPadding()) {
+        Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
             if(count>0) Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 IconButton(onClick={ number=((page ?: 1)-1).toString() },enabled=page!=null && page>1) { Icon(Icons.Outlined.ChevronLeft,"Previous PDF page") }
                 OutlinedTextField(number,{ number=it.filter(Char::isDigit).take(4) },label={ Text("Page of $count") },singleLine=true,isError=page==null,keyboardOptions=androidx.compose.foundation.text.KeyboardOptions(keyboardType=androidx.compose.ui.text.input.KeyboardType.Number),modifier=Modifier.weight(1f))
@@ -64,6 +65,7 @@ internal fun PdfReplacementPagePicker(file:File,model:LibraryViewModel,cancel:()
             Text("Only the chosen page replaces the current page. It is rendered as an image for crop and filter editing; the source PDF stays unchanged.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             Button(onClick={ val chosen=page ?: return@Button; model.run { val result=model.utility.replacementPdfPage(file,chosen,password); choose(result.first,result.second) } },enabled=ready && page!=null && renderedPage==page && !busy,modifier=Modifier.fillMaxWidth()) { Text("Use selected PDF page") }
         }
+        }
     }) { padding -> Box(Modifier.fillMaxSize().padding(padding).padding(12.dp),contentAlignment=Alignment.Center) {
         if(ready) preview?.let { DocumentCanvas(it,"Replacement PDF page $page preview",Modifier.fillMaxSize()) } else if(error.isEmpty()) CircularProgressIndicator()
     } }
@@ -74,8 +76,8 @@ internal fun PdfReplacementPagePicker(file:File,model:LibraryViewModel,cancel:()
 internal fun PdfReplacementEditor(file:File,model:LibraryViewModel,cancel:()->Unit,target:PageLayout,natural:PageLayout?=null,accept:(File,PageLayout)->Unit) {
     var cropping by rememberSaveable(file.path) { mutableStateOf(natural==null) }
     var crop by rememberSaveable(file.path) { mutableStateOf(encodeCorners(Geometry.full)) }
-    var enhancement by rememberSaveable(file.path) { mutableStateOf(Enhancement().encode()) }
-    val settings=Enhancement.decode(enhancement)
+    val edits = rememberFilterEdits(file.path)
+    val settings = edits.settings
     var rotation by rememberSaveable(file.path) { mutableIntStateOf(0) }
     var paperSize by rememberSaveable(file.path) { mutableStateOf("Original") }
     var paperFit by rememberSaveable(file.path) { mutableStateOf("Fit") }
@@ -127,25 +129,34 @@ internal fun PdfReplacementEditor(file:File,model:LibraryViewModel,cancel:()->Un
         finally { loaded?.recycle(); if(content!==loaded) content?.recycle() }
     }
     if(paperSheet) PageSizeSheet(selected,contentPreview,0,{ paperSheet=false }) { setLayout(it); paperSheet=false }
-    if(filters) ModalBottomSheet(onDismissRequest={ filters=false }) {
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-            Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) { Text("Image filter",Modifier.weight(1f),style=MaterialTheme.typography.titleLarge); TextButton(onClick={ filters=false }) { Text("Done") } }
-            Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(8.dp)) { Enhancement.presets.forEach { preset -> FilterChip(settings.preset==preset,{ enhancement=settings.copy(preset=preset).encode() },label={ Text(preset) }) } }
-            listOf("Brightness" to (settings.brightness to (-80f..80f)),"Contrast" to (settings.contrast to (.5f..2f)),"Saturation" to (settings.saturation to (0f..2f)),"Sharpness" to (settings.sharpness to (0f..2f)),"Threshold" to (settings.threshold to (0f..30f)),"Shadow removal" to (settings.shadow to (0f..1f))).forEach { (label,values) ->
-                Text(label,style=MaterialTheme.typography.labelLarge)
-                Slider(values.first.toFloat(),{ value -> enhancement=when(label) { "Brightness" -> settings.copy(brightness=value.toDouble()); "Contrast" -> settings.copy(contrast=value.toDouble()); "Saturation" -> settings.copy(saturation=value.toDouble()); "Sharpness" -> settings.copy(sharpness=value.toDouble()); "Threshold" -> settings.copy(threshold=value.toDouble()); else -> settings.copy(shadow=value.toDouble()) }.encode() },valueRange=values.second,modifier=Modifier.semantics { contentDescription=label })
+    if(filters) FolioSheet(onDismissRequest={ edits.commit(); filters=false }) {
+        val scroll = rememberScrollState()
+        Column(Modifier.fillMaxWidth().filterScrollIndicator(scroll).verticalScroll(scroll).padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) { Text("Image filter",Modifier.weight(1f),style=MaterialTheme.typography.titleLarge); TextButton(onClick={ edits.commit(); filters=false }) { Text("Done") } }
+            FilterPicker(edits, enabled = !busy)
+            val defaults = remember { Enhancement() }
+            @Composable fun dial(label: String, value: Double, neutral: Double, range: ClosedFloatingPointRange<Float>,
+                update: Enhancement.(Double) -> Enhancement) {
+                FolioRulerDial(label, value.toFloat(), range, neutral.toFloat(),
+                    change = { edits.preview(edits.settings.update(it.toDouble())) }, finished = edits::commit, enabled = !busy)
             }
+            dial("Brightness", settings.brightness, defaults.brightness, -80f..80f) { copy(brightness = it) }
+            dial("Contrast", settings.contrast, defaults.contrast, .5f..2f) { copy(contrast = it) }
+            dial("Saturation", settings.saturation, defaults.saturation, 0f..2f) { copy(saturation = it) }
+            dial("Sharpness", settings.sharpness, defaults.sharpness, 0f..2f) { copy(sharpness = it) }
+            dial("Threshold", settings.threshold, defaults.threshold, 0f..30f) { copy(threshold = it) }
+            dial("Shadow removal", settings.shadow, defaults.shadow, 0f..1f) { copy(shadow = it) }
         }
     }
-    Scaffold(topBar={ TopAppBar(title={ Text("Edit replacement",style=MaterialTheme.typography.titleMedium) },navigationIcon={ TextButton(onClick=cancel,enabled=!busy) { Text("Cancel") } },actions={
+    Scaffold(topBar={ FolioTopBar(title={ Text("Edit replacement",style=MaterialTheme.typography.titleMedium) },navigationIcon={ TextButton(onClick=cancel,enabled=!busy) { Text("Cancel") } },actions={
         Button(onClick={ model.run {
             val output=File(file.parentFile,"processed-${UUID.randomUUID()}.jpg")
             try { withContext(Dispatchers.IO) { processing.withLock { val canvas=process(8192); try { output.outputStream().use { check(canvas.compress(Bitmap.CompressFormat.JPEG,95,it)) } } finally { canvas.recycle() } } }; accept(output,layout) }
             catch(t:Throwable) { output.delete(); throw t }
         } },enabled=!busy && previewReady && renderedKey==previewKey && replacementError.isEmpty(),modifier=Modifier.padding(end=8.dp)) { Text("Use page") }
     }) },bottomBar={
-        Surface(color=MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha=.94f),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),shape=MaterialTheme.shapes.large) {
-            Column(Modifier.navigationBarsPadding().padding(12.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+        FolioActionTray(Modifier.navigationBarsPadding()) {
+            Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
                 Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                     val dimensions=layout.dimensions
                     Text(if(dimensions!=null) "%.1f × %.1f mm · %s".format(java.util.Locale.US,dimensions.first,dimensions.second,layout.fit) else "Original / Auto · ${layout.fit}",Modifier.weight(1f),style=MaterialTheme.typography.labelLarge)

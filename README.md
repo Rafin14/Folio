@@ -8,42 +8,38 @@
 
 </div>
 
-## Demo video
+## Folio 2.2.1
 
-![Folio app demo](docs/Folio_demo.gif)
+Folio 2.2.1 brings a frosted interface to the Library, PDF Workspace, scanner, editors and sheets. Customize blur and translucency in Appearance. The Library supports date filtering, pinned favorites and a page highlight when you open a text match. The scanner supports tap-to-focus and starts the crop view closer to the document. Open **Settings → Backup** for offline ZIP export and restore.
 
-Recorded before the latest UI refinements; some screens differ from the current release.
-
-## A closer look
+## Screenshots and walkthrough
 
 <table>
 <tr>
-<td align="center"><img src="docs/images/home.png" width="240" alt="Folio document library"><br><b>Document library</b></td>
-<td align="center"><img src="docs/images/pdf-workspace.png" width="240" alt="PDF Workspace tools"><br><b>PDF Workspace</b></td>
-<td align="center"><img src="docs/images/replacement.png" width="240" alt="Page replacement with size matching"><br><b>Page replacement</b></td>
-</tr>
-<tr>
-<td align="center"><img src="docs/images/ocr-search.png" width="240" alt="OCR phrase search and match navigation"><br><b>Search extracted text</b></td>
-<td align="center"><img src="docs/images/document.png" width="240" alt="Document pages and selection controls"><br><b>Page management</b></td>
-<td align="center"><img src="docs/images/amoled.png" width="240" alt="PDF Workspace in AMOLED mode"><br><b>AMOLED theme</b></td>
+<td align="center"><img src="docs/images/library-compact-2.2.1.png" width="240" alt="Folio 2.2.1 AMOLED Library with its compact header and floating navigation"><br><b>Compact Library</b></td>
+<td align="center"><img src="docs/images/search-match-2.2.1.png" width="240" alt="Folio 2.2.1 Light-mode document gallery with page 3 highlighted as a search match"><br><b>Search match in Light mode</b></td>
 </tr>
 </table>
 
-[PDF page selection](docs/images/pdf-selection.png) · [OCR PDF search](docs/images/pdf-ocr-search.png)
+![Animated Folio walkthrough showing document editing, OCR, and PDF workflows](docs/Folio_demo.gif)
+
+The walkthrough shows an earlier version of the interface.
+
+Earlier workflow screenshots: [PDF Workspace](docs/images/pdf-workspace.png), [page selection](docs/images/pdf-selection.png), [document OCR search](docs/images/ocr-search.png), and [PDF OCR search](docs/images/pdf-ocr-search.png).
 
 ## What you can do
 
 | Workflow | Capabilities |
 | --- | --- |
 | **Scan & import** | Live LCNet corner detection, multi-page camera capture, image import, reviewed PDF import with a persistent PDF badge, manual corners with a magnifier, perspective correction. |
-| **Edit** | Retained original images, crop, rotate, enhancement presets and adjustments, zoom inspection, page-size preview. |
-| **Organize** | Folders, favorites, grid/list views, sorting, rename, duplicate, move, long-press selection and page ordering. |
+| **Edit** | Retained originals, crop zoom with a fixed magnifier, stacked enhancement presets with undo and redo, Before/After preview, and shared page sizing from the gallery or editor. |
+| **Organize** | Folders, pinned favorites, created- and modified-date filters, grid and list views, sorting, long-press selection and page ordering. |
 | **Read & search** | Offline PaddleOCR, background or on-demand extraction, library text search, selectable text, highlighted word/phrase matches with previous/next navigation. |
 | **PDF Workspace** | Generate PDF from saved Folio PDF pages, image to PDF, merge, split, PDF to PNG, and edit a working copy: draw, rotate, reorder, remove or replace pages. |
 | **Analyze PDFs offline** | Layout-Aware OCR with native text reuse or Full Page OCR using PaddleOCR directly, current-page/document processing, region/page copying and TXT export; original-image/vector figure extraction with a labeled PNG fallback; editable or layout-preserving DOCX conversion. |
 | **Share & print** | Android Sharesheet, PDF/image exports, separate or combined documents, selected-page exports, Android print preview for all or selected pages. |
 | **Recover** | Document/page Recycle Bin, restoration, permanent deletion, automatic removal after 60 days. |
-| **Appearance** | Light, dark and AMOLED themes with system dynamic colors on Android 12+. |
+| **Appearance** | Light, dark and AMOLED themes, frosted controls with adjustable translucency, and system dynamic colors on Android 12+. |
 
 PDF replacement accepts an image or a selected PDF page, with a live **Match Page Size** preview. Exports offer quality/compression and password protection where supported. Larger PDF jobs provide progress, cancellation and interrupted-operation recovery.
 
@@ -57,20 +53,21 @@ The new layout-analysis tools have a substantial memory requirement. DOCX recons
 
 ## Get started
 
-Android **8.0 / API 26+** is required. If installing a packaged APK from the GitHub release, choose the appropriate asset:
-
-| APK | Device |
-| --- | --- |
-| `Folio_v2_universal.apk` | ARM 32-bit and 64-bit Android phones. |
+Android **8.0 / API 26+** is required. The universal ARM APK supports 32-bit and 64-bit ARM phones. See [BUILDING.md](BUILDING.md) to build it from source.
 
 Open the downloaded APK and allow installation from that browser/file manager when Android asks.
 
+Android checks the signing certificate when updating an installed copy. If your new APK uses a different certificate, export your data and verify the backup before uninstalling. [Signing and upgrade details](docs/RELEASE_SIGNING.md)
 
 Open Folio, choose **New document**, and grant camera permission to scan. You can import images instead. Open **PDF workspace** to work with device PDFs and images. Scanning, editing, OCR and PDF tools require no account.
 
-## Google Drive Backup — approved test users only
+## Back up your library
 
-**Google Drive Backup in the public Folio release is currently available only to approved Google OAuth test users.**
+Open **Settings → Backup → Local backup** to export your library to a ZIP or restore one from device storage. Local backup works offline.
+
+### Google Drive Backup
+
+**Google Drive Backup requires a configured OAuth client. Builds configured with an OAuth app in Testing are limited to that project's approved accounts.**
 
 Accounts without approved access cannot use Google Drive Backup. Scanning, editing, OCR and PDF tools remain available without a Google account.
 
@@ -98,7 +95,7 @@ Document images and OCR stay on the device unless you explicitly share/export th
 - OCR works best with printed English. Handwriting, mathematics, other languages and complex layouts may produce inaccurate results. Check extracted text for mistakes.
 - OCR has a CPU fallback. NNAPI is requested on eligible devices; actual supported node execution varies. XNNPACK is CPU acceleration. GPU acceleration is not guaranteed.
 - Exported PDFs do not currently embed an OCR text layer. Replacing a PDF page rasterizes that selected page; its vector/text content is not retained in the replacement.
-- Drive access is restricted to approved test users. Existing cloud backups must be restored before uploads are unlocked on a fresh installation.
+- On a fresh installation, any existing Drive backup must be restored before uploads are unlocked.
 
 ## License and acknowledgements
 
@@ -107,4 +104,3 @@ Folio is distributed under [GNU AGPL v3](LICENSE). iText Community Android uses 
 LCNet comes from [DocsaidLab DocAligner](https://github.com/DocsaidLab/DocAligner). Offline OCR uses the official [PaddlePaddle PP-OCRv6_small ONNX models](docs/MODELS.md). Their upstream licenses and provenance are recorded in [THIRD_PARTY.md](docs/THIRD_PARTY.md) and [bundled notices](app/src/main/assets/licenses). Bundled sample photographs are credited to MakeACopy.
 
 For contributions, see [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md); never post private documents, credentials or account information in public issues.
-

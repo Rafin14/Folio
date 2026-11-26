@@ -4,6 +4,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class GeometryTest {
+    @Test fun cropFrameZoomsIntoAnOffCenterDocumentWithinSafeLimits() {
+        val points = listOf(Corner(.55, .3), Corner(.95, .3), Corner(.95, .7), Corner(.55, .7))
+        val frame = Geometry.cropFrame(points, width = 300f, height = 400f, fittedWidth = 300f, fittedHeight = 400f)
+        assertEquals(2.35f, frame.zoom, .001f)
+        assertEquals(.75, frame.center.x, .001)
+        assertEquals(.5, frame.center.y, .001)
+        assertEquals(1f, Geometry.cropFrame(Geometry.full, 300f, 400f, 300f, 400f).zoom, 0f)
+        assertEquals(2.5f, Geometry.cropFrame(points.map { Corner(it.x / 4, it.y / 4) }, 300f, 400f, 300f, 400f).zoom, 0f)
+    }
+
     @Test fun rectanglesRotationsSkewAndExtremePerspective() {
         assertEquals(999 to 1999, Geometry.output(Geometry.full, 1000, 2000))
         val rotated = listOf(Corner(.5, .1), Corner(.9, .5), Corner(.5, .9), Corner(.1, .5))

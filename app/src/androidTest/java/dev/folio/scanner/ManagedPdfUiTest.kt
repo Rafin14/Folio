@@ -28,4 +28,21 @@ class ManagedPdfUiTest {
         compose.onNodeWithText("Edit PDF",substring=false).performScrollTo().performClick()
         compose.onNodeWithText("Folio Documents").assertIsDisplayed()
     }
+
+    @Test fun workspaceSlidesWhileTheDockStaysAnchored() {
+        val workspace = compose.onNodeWithText("PDF workspace")
+        val dockStart = workspace.fetchSemanticsNode().boundsInRoot.center.x
+        compose.mainClock.autoAdvance = false
+        try {
+            workspace.performClick()
+            compose.mainClock.advanceTimeBy(96)
+            val tool = compose.onNodeWithText("Split PDF")
+            val entering = tool.getUnclippedBoundsInRoot().left
+            val movingDock = compose.onAllNodesWithText("PDF workspace").filter(hasClickAction()).onFirst()
+            org.junit.Assert.assertEquals(dockStart, movingDock.fetchSemanticsNode().boundsInRoot.center.x, 1f)
+            compose.mainClock.advanceTimeBy(400)
+            val settled = tool.getUnclippedBoundsInRoot().left
+            org.junit.Assert.assertTrue("Workspace enters from the left", entering < settled)
+        } finally { compose.mainClock.autoAdvance = true }
+    }
 }

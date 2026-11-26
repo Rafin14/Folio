@@ -19,6 +19,42 @@ import java.io.*
 
 class PaperCropUiTest {
     @get:Rule val compose=createAndroidComposeRule<MainActivity>()
+    @Test fun sameSizeAppliesToGallerySelectionAndToAllPagesFromEditor() {
+        val inst = InstrumentationRegistry.getInstrumentation()
+        val repo = EntryPointAccessors.fromApplication(inst.targetContext, PdfWorkerDependencies::class.java).pdfs().documents
+        val doc = runBlocking { repo.create("Same size fixture") }
+        val bitmap = Bitmap.createBitmap(180, 270, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
+        val bytes = try { ByteArrayOutputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it); it.toByteArray() } }
+        finally { bitmap.recycle() }
+        try {
+            val ids = runBlocking { List(3) { repo.importImage(doc, ByteArrayInputStream(bytes), detectDocument = false) } }
+            compose.waitUntil(15000) { compose.onNodeWithText("Same size fixture").isDisplayed() }
+            compose.onNodeWithText("Same size fixture").performClick()
+            compose.onNodeWithContentDescription("Select page 1").performClick()
+            compose.onNodeWithContentDescription("Select page 2").performClick()
+            compose.onNodeWithContentDescription("Document actions").performClick()
+            compose.onNodeWithText("Make pages the same size").performClick()
+            compose.onNodeWithText("Apply one paper size to 2 pages.").assertIsDisplayed()
+            compose.waitForIdle()
+            Thread.sleep(450)
+            UiDevice.getInstance(inst).takeScreenshot(File(inst.targetContext.getExternalFilesDir(null), "folio-same-page-size.png"))
+            compose.onNodeWithText("A5", substring = false).performScrollTo().performClick()
+            compose.onNodeWithText("Apply page size").performScrollTo().performClick()
+            compose.waitUntil(30000) { runBlocking { repo.dao.page(ids[1])?.pageSize == "A5" } }
+            assertEquals(listOf("A5", "A5", "Original"), runBlocking { repo.dao.pages(doc).map { it.pageSize } })
+            compose.onNodeWithContentDescription("Cancel selection").performClick()
+            compose.onNodeWithContentDescription("Preview page 1").performClick()
+            compose.waitUntil(30000) { compose.onNodeWithContentDescription("Enhanced page preview").isDisplayed() }
+            compose.onNodeWithText("Page size", substring = false).performScrollTo().performClick()
+            compose.onNodeWithText("Letter", substring = false).performScrollTo().performClick()
+            compose.onNodeWithText("Use for all pages on save").performScrollTo().performClick()
+            compose.waitUntil(30000) { compose.onAllNodes(hasText("Save", substring = false) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithText("Save", substring = false).performClick()
+            compose.waitUntil(30000) { runBlocking { repo.dao.pages(doc).all { it.pageSize == "Letter" } } }
+            assertTrue(runBlocking { repo.dao.pages(doc).all { File(it.originalImageUri).readBytes().contentEquals(bytes) } })
+        } finally { runBlocking { repo.purgeForTest(doc) } }
+    }
+
     @Test fun everyPaperPreviewOrientationAndFitChangeAndEdgeCornerMovesWithoutSnapping() {
         val inst=InstrumentationRegistry.getInstrumentation()
         val repo=EntryPointAccessors.fromApplication(inst.targetContext,PdfWorkerDependencies::class.java).pdfs().documents
@@ -61,7 +97,18 @@ class PaperCropUiTest {
                 val rect=dev.folio.scanner.ui.fit(width.toFloat(),height.toFloat(),400f/600,24f*density)
                 down(Offset(rect[0],rect[1])); moveTo(Offset(rect[0]+rect[2]*.01f,rect[1]+rect[3]*.01f))
             }
-            compose.onNodeWithContentDescription("Crop corners").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Magnifying corner 1")); capture("magnifier")
+            compose.onNodeWithContentDescription("Crop corners").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Magnifying corner 1"))
+            compose.waitForIdle(); capture("magnifier")
+            val cropBounds = compose.onNodeWithContentDescription("Crop corners").fetchSemanticsNode().boundsInRoot
+            val magnifier = compose.onNodeWithContentDescription("Corner magnifier")
+            val firstLens = magnifier.fetchSemanticsNode().boundsInRoot
+            assertTrue(firstLens.center.x > cropBounds.center.x && firstLens.top < cropBounds.top)
+            compose.onNodeWithContentDescription("Crop corners").performTouchInput { up() }
+            compose.onNodeWithContentDescription("Crop corners").performTouchInput {
+                val r = dev.folio.scanner.ui.fit(width.toFloat(),height.toFloat(),400f/600,24f*density)
+                down(Offset(r[0]+r[2], r[1]+r[3]))
+            }
+            assertEquals(firstLens, magnifier.fetchSemanticsNode().boundsInRoot)
             compose.onNodeWithContentDescription("Crop corners").performTouchInput { up() }
             compose.onNodeWithContentDescription("Crop corners").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Zoom 1.0 times"))
             compose.onNodeWithText("Confirm crop").performClick()

@@ -123,7 +123,7 @@ class ImagePipeline internal constructor(private val automatic: DocumentCornerDe
         try {
             Utils.bitmapToMat(bitmap, image)
             Imgproc.cvtColor(image, image, Imgproc.COLOR_RGBA2RGB)
-            val shadow = maxOf(settings.shadow, if (settings.preset in listOf("Auto", "Document", "No Shadow")) 1.0 else 0.0)
+            val shadow = maxOf(settings.shadow, if (settings.removesShadow) 1.0 else 0.0)
             if (shadow > 0.0) {
                 // ponytail: low-frequency normalization reduces shadows; curved book pages need a separate dewarping model.
                 val size = Size(maxOf(2, image.cols() / 32).toDouble(), maxOf(2, image.rows() / 32).toDouble())
@@ -136,20 +136,20 @@ class ImagePipeline internal constructor(private val automatic: DocumentCornerDe
                 Core.divide(image, background, blurred, 245.0)
                 Core.addWeighted(image, 1.0 - shadow, blurred, shadow, 0.0, image)
             }
-            if (settings.preset in listOf("Grayscale", "Black & White", "Document")) {
+            if (settings.usesGrayscale) {
                 Imgproc.cvtColor(image, gray, Imgproc.COLOR_RGB2GRAY)
-                if (settings.preset == "Black & White" || settings.preset == "Document") {
+                if (settings.usesThreshold) {
                     Imgproc.adaptiveThreshold(gray, gray, 255.0, Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C, Imgproc.THRESH_BINARY, 31, settings.threshold)
                 }
                 Imgproc.cvtColor(gray, image, Imgproc.COLOR_GRAY2RGB)
-            } else if (settings.saturation != 1.0 || settings.preset == "Color") {
+            } else if (settings.saturation != 1.0 || settings.boostsColor) {
                 Imgproc.cvtColor(image, gray, Imgproc.COLOR_RGB2GRAY)
                 Imgproc.cvtColor(gray, gray, Imgproc.COLOR_GRAY2RGB)
-                val saturation = settings.saturation * if (settings.preset == "Color") 1.15 else 1.0
+                val saturation = settings.saturation * if (settings.boostsColor) 1.15 else 1.0
                 Core.addWeighted(image, saturation, gray, 1.0 - saturation, 0.0, image)
             }
-            image.convertTo(image, -1, settings.contrast, settings.brightness + if (settings.preset == "Lighten") 24.0 else 0.0)
-            val sharpness = maxOf(settings.sharpness, if (settings.preset == "Sharpen") .8 else 0.0)
+            image.convertTo(image, -1, settings.contrast, settings.brightnessOffset)
+            val sharpness = settings.effectiveSharpness
             if (sharpness > 0) {
                 Imgproc.GaussianBlur(image, blurred, Size(0.0, 0.0), 1.2)
                 Core.addWeighted(image, 1 + sharpness, blurred, -sharpness, 0.0, image)

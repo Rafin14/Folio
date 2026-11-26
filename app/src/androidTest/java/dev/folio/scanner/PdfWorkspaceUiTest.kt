@@ -208,10 +208,16 @@ class PdfWorkspaceUiTest {
             compose.onNodeWithText("Done",substring=false).performClick()
             assertEquals(original[0].id,utility.pages(id).last().id)
             compose.onNodeWithText("Delete",substring=false).performScrollTo().performClick(); compose.onNodeWithText("Cancel",substring=false).performClick()
+            fun closeGallery() {
+                compose.waitUntil(10000) { compose.onAllNodesWithContentDescription("PDF page gallery").fetchSemanticsNodes().isNotEmpty() }
+                compose.onNodeWithContentDescription("Back", substring = false).performClick()
+            }
             compose.onNodeWithContentDescription("Close PDF editor").performClick()
+            closeGallery()
             compose.waitUntil(10000) { compose.onAllNodesWithText("Leave with unsaved changes?").fetchSemanticsNodes(atLeastOneRootRequired=false).isNotEmpty() }; compose.onNodeWithText("Leave with unsaved changes?").assertIsDisplayed(); compose.onNodeWithText("Continue Editing",substring=false).performClick()
-            compose.onNodeWithContentDescription("Close PDF editor").performClick(); compose.onNodeWithText("Save and Export").performClick()
-            compose.onNodeWithText("Return to PDF editor").performClick()
+            closeGallery()
+            compose.onNodeWithText("Save and Export").performClick()
+            compose.onNodeWithText("Return to PDF gallery").performScrollTo().performClick()
             val state=utility.pages(id); assertTrue("Ink preserved",state.any { it.ink.isNotEmpty() }); assertTrue("Rotation preserved",state.any { it.rotation==90 })
             compose.activityRule.scenario.recreate()
             // This fixture installs a standalone editor, outside MainActivity's navigation tree.
@@ -219,7 +225,9 @@ class PdfWorkspaceUiTest {
             openSession(id)
             compose.waitUntil(15000) { compose.onAllNodesWithContentDescription("Close PDF editor").fetchSemanticsNodes(atLeastOneRootRequired=false).isNotEmpty() }
             assertEquals(state,utility.pages(id))
-            compose.onNodeWithContentDescription("Close PDF editor").performClick(); compose.onNodeWithText("Discard Changes and Leave").performClick()
+            compose.onNodeWithContentDescription("Close PDF editor").performClick()
+            closeGallery()
+            compose.onNodeWithText("Discard Changes and Leave").performClick()
             compose.waitUntil(15000) { compose.onAllNodesWithText("PDF workspace").fetchSemanticsNodes().isNotEmpty() }
             assertEquals(before,runBlocking { utility.documents.dao.allDocuments() })
         } finally { runBlocking { utility.discard(id) }; source.delete() }

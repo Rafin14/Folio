@@ -37,7 +37,7 @@ class ReleaseAuditTest {
                 compose.onNodeWithContentDescription("Settings").performClick()
                 text(theme).performScrollTo().performClick()
                 text("Appearance").performScrollTo(); capture("$theme-settings-top")
-                text("Google Drive Backup").performScrollTo(); capture("$theme-settings-middle")
+                text("Backup").performScrollTo(); capture("$theme-settings-middle")
                 text("Private by default").performScrollTo(); capture("$theme-settings-bottom")
                 text("Text recognition").performScrollTo().performClick()
                 capture("$theme-ocr-settings-top")
@@ -46,18 +46,28 @@ class ReleaseAuditTest {
                     capture("$theme-ocr-settings-bottom")
                 }
                 back()
+                text("Backup").performScrollTo().performClick()
+                capture("$theme-backup-home")
+                text("Local backup").performClick()
+                capture("$theme-local-backup")
+                back()
                 text("Google Drive Backup").performScrollTo().performClick()
                 capture("$theme-backup-disconnected-top")
                 compose.onAllNodes(hasScrollAction()).fetchSemanticsNodes().firstOrNull()?.let {
                     compose.onAllNodes(hasScrollAction())[0].performTouchInput { swipeUp() }
                     capture("$theme-backup-disconnected-bottom")
                 }
-                back(); back(); capture("$theme-home")
+                back(); back(); back(); capture("$theme-home")
                 assertTrue("New document needs a native accessibility label in $theme",UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).hasObject(By.desc("New document")))
                 text("PDF workspace").performClick()
                 workspaceItem("Split PDF"); capture("$theme-workspace-top")
                 workspaceItem("Generate PDF"); capture("$theme-workspace-middle")
-                workspaceItem("PDF licenses and attribution"); capture("$theme-workspace-bottom")
+                workspaceItem("PDF licenses and attribution")
+                compose.onNode(hasScrollAction()).performTouchInput { swipeUp() }
+                val attribution = text("PDF licenses and attribution").fetchSemanticsNode().boundsInRoot
+                val dock = compose.onNode(hasText("PDF workspace") and isSelected()).fetchSemanticsNode().boundsInRoot
+                assertTrue("Attribution must scroll clear of the dock in $theme", attribution.bottom < dock.top)
+                capture("$theme-workspace-bottom")
                 text("PDF licenses and attribution").performClick(); capture("$theme-licenses-dialog")
                 text("Close").performClick()
                 workspaceItem("Edit PDF"); text("Edit PDF").performClick(); capture("$theme-edit-source-dialog")

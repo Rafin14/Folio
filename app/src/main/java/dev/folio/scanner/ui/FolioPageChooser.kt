@@ -44,8 +44,10 @@ internal fun FolioPageChooser(model:LibraryViewModel,single:Boolean,dismiss:()->
     val windowHeight=LocalWindowInfo.current.containerSize.height
     val maximumHeight=with(LocalDensity.current) { windowHeight.toDp()*.76f }
     Dialog(onDismissRequest=dismiss,properties=DialogProperties(usePlatformDefaultWidth=false)) {
+        FolioWindowBlur()
         Surface(Modifier.widthIn(max=620.dp).fillMaxWidth(.90f).heightIn(max=maximumHeight),shape=MaterialTheme.shapes.large,
-            color=MaterialTheme.colorScheme.surfaceContainer.copy(alpha=.97f),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant.copy(alpha=.65f)),tonalElevation=2.dp) {
+            color=MaterialTheme.colorScheme.surfaceContainer.copy(alpha=LocalFolioBlur.current.opacity(.97f,.85f)),
+            border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant.copy(alpha=.65f)),tonalElevation=2.dp) {
             Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment=Alignment.CenterVertically) {
                     if(documentId.isNotEmpty()) IconButton(onClick={ documentId="" }) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back to Folio documents") }

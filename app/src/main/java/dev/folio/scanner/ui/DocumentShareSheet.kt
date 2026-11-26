@@ -8,15 +8,29 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.PictureAsPdf
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -61,7 +75,7 @@ internal fun DocumentShareSheet(doc: Document, pages: List<Page>, model: Library
     val context = LocalContext.current
     val busy by model.busy.collectAsStateWithLifecycle()
     val jobs by remember(doc.id) { model.pdfs.jobs(doc.id) }.collectAsStateWithLifecycle(emptyList())
-var allPages by remember { mutableStateOf<List<Page>?>(null) }
+    var allPages by remember { mutableStateOf<List<Page>?>(null) }
     if(allPages!=null) { DocumentShareSheet(doc,allPages!!,model,dismiss=dismiss); return }
     var selected by rememberSaveable(doc.id) { mutableStateOf(pages.map { it.id }) }
     var initialized by rememberSaveable(doc.id) { mutableStateOf(pages.isNotEmpty()) }
@@ -111,37 +125,145 @@ var allPages by remember { mutableStateOf<List<Page>?>(null) }
             catch (failure: Exception) { android.util.Log.e("Folio sharing","PDF handoff failed",failure); model.error.value = "Could not share or export PDF. Open PDF workspace to retry."; operation = "" }
         }
     }
-    ModalBottomSheet(onDismissRequest = { if (!busy) dismiss() }) {
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Share or export", style = MaterialTheme.typography.titleLarge)
-            Text(if(pageOnly) pages.firstOrNull()?.label() ?: doc.title else doc.title, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (operation.isNotEmpty()) {
-                Text(if (job?.state == WorkInfo.State.FAILED) "PDF operation failed. Retry in PDF workspace." else if (job?.state == WorkInfo.State.CANCELLED) "PDF operation cancelled" else "Preparing PDF")
-                val done = job?.progress?.getInt("done", 0) ?: 0; val total = job?.progress?.getInt("total", 0) ?: 0
-                if (waiting) {
-                    if (total > 0) { LinearProgressIndicator(progress = { done.toFloat() / total }, modifier = Modifier.fillMaxWidth()); Text("$done of $total") }
-                    else LinearProgressIndicator(Modifier.fillMaxWidth())
-                    TextButton(onClick = { job?.let { model.pdfs.work.cancelWorkById(it.id) } }, enabled = job != null) { Text("Cancel PDF") }
-                } else TextButton(onClick = { operation = "" }) { Text("Choose another action") }
-            } else {
-                Text("PDF quality", style = MaterialTheme.typography.labelLarge)
-                PdfQuality.entries.forEach { value -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(quality == value, { quality = value }); Text(when(value) { PdfQuality.ORIGINAL -> "Original"; PdfQuality.BALANCED -> "Balanced · 2400 px"; PdfQuality.SMALL -> "Small · 1600 px" })
-                } }
-                OutlinedTextField(password,{ password=it },label={ Text("PDF password (optional)") },visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation(),singleLine=true,isError=password.isNotEmpty() && password.length !in 4..64,modifier=Modifier.fillMaxWidth())
-                Button(onClick = { generate("share") }, enabled = !busy && selected.isNotEmpty() && (password.isEmpty() || password.length in 4..64), modifier = Modifier.fillMaxWidth()) { Text("Share as PDF") }
-                OutlinedButton(onClick = { exportPdf.launch(doc.title + ".pdf") }, enabled = !busy && selected.isNotEmpty() && (password.isEmpty() || password.length in 4..64), modifier = Modifier.fillMaxWidth()) { Text("Export PDF") }
-                HorizontalDivider()
-                Text("${selected.size} pages selected", style = MaterialTheme.typography.titleMedium)
-                pages.forEach { page -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(page.id in selected, { checked -> selected = if (checked) selected + page.id else selected - page.id }); PageThumbnail(page,model,"Share preview ${page.label()}",Modifier.size(36.dp,48.dp)); Spacer(Modifier.width(8.dp)); Text(page.label(),Modifier.weight(1f))
-                } }
-                Button(onClick = { images() }, enabled = selected.isNotEmpty() && !busy, modifier = Modifier.fillMaxWidth()) { Text("Share as Images") }
-                OutlinedButton(onClick = { exportTree.launch(null) }, enabled = selected.isNotEmpty() && !busy, modifier = Modifier.fillMaxWidth()) { Text("Export Images") }
-                if(busy && imageJob?.isActive==true) TextButton(onClick={ imageJob?.cancel() }) { Text("Cancel image export") }
+    FolioSheet(onDismissRequest = { if (!busy) dismiss() }) {
+        Column(
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            ShareSheetHeading("Share or export", if(pageOnly) pages.firstOrNull()?.label() ?: doc.title else doc.title)
+            Crossfade(operation.isNotEmpty(), animationSpec = tween(160), label = "Share preparation") { preparing ->
+                if (preparing) {
+                    ShareSection("PDF", Icons.Outlined.PictureAsPdf) {
+                        Text(when (job?.state) {
+                            WorkInfo.State.FAILED -> "PDF operation failed. Retry in PDF workspace."
+                            WorkInfo.State.CANCELLED -> "PDF operation cancelled"
+                            else -> "Preparing PDF"
+                        })
+                        val done = job?.progress?.getInt("done", 0) ?: 0
+                        val total = job?.progress?.getInt("total", 0) ?: 0
+                        if (waiting) {
+                            if (total > 0) {
+                                LinearProgressIndicator(progress = { done.toFloat() / total }, modifier = Modifier.fillMaxWidth())
+                                Text("$done of $total")
+                            } else LinearProgressIndicator(Modifier.fillMaxWidth())
+                            TextButton(onClick = { job?.let { model.pdfs.work.cancelWorkById(it.id) } }, enabled = job != null) { Text("Cancel PDF") }
+                        } else TextButton(onClick = { operation = "" }) { Text("Choose another action") }
+                    }
+                } else Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    val canShare = !busy && selected.isNotEmpty() && operation.isEmpty()
+                    val passwordValid = password.isEmpty() || password.length in 4..64
+                    Text(if (selected.size == 1) "1 page selected" else "${selected.size} pages selected",
+                        style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    ShareSection("PDF", Icons.Outlined.PictureAsPdf) {
+                        Text("PDF quality", style = MaterialTheme.typography.labelLarge)
+                        ShareQualityChoices(quality) { quality = it }
+                        OutlinedTextField(
+                            password, { password = it }, label = { Text("PDF password (optional)") },
+                            leadingIcon = { Icon(Icons.Outlined.Lock, null, Modifier.size(18.dp)) },
+                            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                            singleLine = true, isError = !passwordValid, modifier = Modifier.fillMaxWidth(),
+                            supportingText = if (passwordValid) null else { { Text("Use 4–64 characters.") } }
+                        )
+                        ShareActions("Share as PDF", "Export PDF", canShare && passwordValid,
+                            share = { generate("share") }, export = { exportPdf.launch(doc.title + ".pdf") })
+                    }
+                    ShareSection("JPEG images", Icons.Outlined.Image) {
+                        ShareActions("Share as Images", "Export Images", canShare, share = { images() }, export = { exportTree.launch(null) })
+                        if (busy && imageJob?.isActive == true) TextButton(onClick = { imageJob?.cancel() }) {
+                            Text("Cancel image export")
+                        }
+                    }
+                    ShareSection("Pages", Icons.Outlined.PictureAsPdf) {
+                        pages.forEach { page ->
+                            val checked = page.id in selected
+                            val fill by animateColorAsState(
+                                if (checked) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = .66f)
+                                else MaterialTheme.colorScheme.surfaceContainerLow,
+                                tween(160), label = "Share page selection"
+                            )
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .background(fill, MaterialTheme.shapes.medium)
+                                    .toggleable(checked, enabled = !busy, role = Role.Checkbox) {
+                                        selected = if (it) selected + page.id else selected - page.id
+                                    }.padding(8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(checked, onCheckedChange = null)
+                                PageThumbnail(page, model, "Share preview ${page.label()}", Modifier.size(32.dp, 42.dp))
+                                Text(page.label(), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                    }
+                }
             }
             if(pageOnly && operation.isEmpty()) TextButton(onClick={ model.run { allPages=model.repository.dao.pages(doc.id) } },enabled=!busy) { Text("Share whole document") }
             TextButton(onClick = dismiss, enabled = !busy) { Text("Close") }
+        }
+    }
+}
+
+@Composable
+internal fun ShareSheetHeading(title: String, subtitle: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.primaryContainer) {
+            Icon(Icons.Outlined.Share, null, Modifier.padding(12.dp).size(22.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+        }
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleLarge)
+            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+internal fun ShareSection(title: String, icon: ImageVector, content: @Composable ColumnScope.() -> Unit) {
+    FolioGlassSurface(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, raised = false) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(icon, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                Text(title, style = MaterialTheme.typography.titleMedium)
+            }
+            content()
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun ShareQualityChoices(quality: PdfQuality, choose: (PdfQuality) -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        PdfQuality.entries.forEach { value ->
+            FilterChip(selected = quality == value, onClick = { choose(value) }, label = {
+                Text(when (value) {
+                    PdfQuality.ORIGINAL -> "Original"
+                    PdfQuality.BALANCED -> "Balanced"
+                    PdfQuality.SMALL -> "Small"
+                })
+            })
+        }
+    }
+    Text(when (quality) {
+        PdfQuality.ORIGINAL -> "Full resolution"
+        PdfQuality.BALANCED -> "Up to 2400 px per page"
+        PdfQuality.SMALL -> "Up to 1600 px per page"
+    }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ShareActions(shareLabel: String, exportLabel: String, enabled: Boolean, share: () -> Unit, export: () -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(onClick = share, enabled = enabled, contentPadding = PaddingValues(horizontal = 12.dp)) {
+            Icon(Icons.Outlined.Share, null, Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(shareLabel)
+        }
+        OutlinedButton(onClick = export, enabled = enabled, contentPadding = PaddingValues(horizontal = 12.dp)) {
+            Icon(Icons.Outlined.Download, null, Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(exportLabel)
         }
     }
 }

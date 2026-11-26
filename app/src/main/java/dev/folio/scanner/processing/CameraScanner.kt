@@ -13,6 +13,7 @@ import androidx.core.view.doOnLayout
 import androidx.lifecycle.LifecycleOwner
 import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class CameraScanner(private val context: Context, private val pipeline: ImagePipeline) {
     private val executor = Executors.newSingleThreadExecutor()
@@ -25,6 +26,7 @@ class CameraScanner(private val context: Context, private val pipeline: ImagePip
     @Volatile var fps = 0.0; private set
     fun bind(view: PreviewView, owner: LifecycleOwner, front: Boolean, boundary: (List<Corner>?, Float, Boolean) -> Unit, failure: (String) -> Unit) {
         val ticket = ++generation
+        camera = null
         // CameraX computes the common crop from the measured preview, including display rotation.
         view.doOnLayout {
             if (closed || generation != ticket) return@doOnLayout
@@ -83,6 +85,17 @@ class CameraScanner(private val context: Context, private val pipeline: ImagePip
             },main)
         }
     }
+    fun focus(view: PreviewView, x: Float, y: Float): Boolean {
+        val current = camera ?: return false
+        if (closed || view.previewStreamState.value != PreviewView.StreamState.STREAMING) return false
+        val point = view.meteringPointFactory.createPoint(x, y)
+        val action = FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE)
+            .setAutoCancelDuration(3, TimeUnit.SECONDS).build()
+        if (!current.cameraInfo.isFocusMeteringSupported(action)) return false
+        current.cameraControl.startFocusAndMetering(action)
+        return true
+    }
+
     fun torch(enabled: Boolean, failure: (String) -> Unit) {
         val current = camera ?: return
         if (!current.cameraInfo.hasFlashUnit()) { failure("This camera has no torch."); return }

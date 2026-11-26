@@ -37,9 +37,10 @@ import dev.folio.scanner.data.PageLayout
 
 @Composable
 
-internal fun PageSizeSheet(initial: PageLayout, image: android.graphics.Bitmap?, rotation: Int, dismiss: () -> Unit, apply: (PageLayout) -> Unit) {
+internal fun PageSizeSheet(initial: PageLayout, image: android.graphics.Bitmap?, rotation: Int, dismiss: () -> Unit,
+    pageCount: Int? = null, applyToDocument: ((PageLayout) -> Unit)? = null, apply: (PageLayout) -> Unit) {
 
-    var size by rememberSaveable { mutableStateOf(initial.size) }
+    var size by rememberSaveable { mutableStateOf(if (pageCount != null && initial.dimensions == null) "A4" else initial.size) }
     var landscape by rememberSaveable { mutableStateOf(initial.widthMm>initial.heightMm) }
 
     var fit by rememberSaveable { mutableStateOf(initial.fit) }
@@ -50,15 +51,23 @@ internal fun PageSizeSheet(initial: PageLayout, image: android.graphics.Bitmap?,
 
     val paper=runCatching { PageLayout(size,fit,if(size=="Custom") width.toDouble() else if(landscape) 297.0 else 210.0,if(size=="Custom") height.toDouble() else if(landscape) 210.0 else 297.0) }.getOrNull()
 
-    ModalBottomSheet(onDismissRequest=dismiss) {
+    FolioSheet(onDismissRequest=dismiss) {
 
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
 
-            Text("Page size",style=MaterialTheme.typography.titleLarge)
+            Text(if (pageCount == null) "Page size" else "Make pages the same size",style=MaterialTheme.typography.titleLarge)
+            if (pageCount != null) Text("Apply one paper size to $pageCount pages.", color = MaterialTheme.colorScheme.onSurfaceVariant)
 
-            Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+            val sizeScroll = rememberScrollState()
+            Row(
+                Modifier.fillMaxWidth().filterScrollIndicator(sizeScroll, horizontal = true)
+                    .horizontalScroll(sizeScroll).padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
 
-                PageLayout.sizes.forEach { preset -> FilterChip(size==preset,{ size=preset },leadingIcon={ if(size==preset) Text("✓") },label={ Text(if(preset=="Original") "Original / Auto" else preset) }) }
+                PageLayout.sizes.filter { pageCount == null || it != "Original" }.forEach { preset ->
+                    FilterChip(size==preset,{ size=preset },leadingIcon={ if(size==preset) Text("✓") },label={ Text(if(preset=="Original") "Original / Auto" else preset) })
+                }
 
             }
 
@@ -137,6 +146,10 @@ internal fun PageSizeSheet(initial: PageLayout, image: android.graphics.Bitmap?,
             }
 
             Button(onClick={ paper?.let(apply) },enabled=paper!=null,modifier=Modifier.fillMaxWidth()) { Text("Apply page size") }
+            if (applyToDocument != null) {
+                OutlinedButton(onClick = { paper?.let(applyToDocument) }, enabled = paper?.dimensions != null,
+                    modifier = Modifier.fillMaxWidth()) { Text("Use for all pages on save") }
+            }
 
             TextButton(onClick=dismiss,modifier=Modifier.fillMaxWidth()) { Text("Cancel") }
 

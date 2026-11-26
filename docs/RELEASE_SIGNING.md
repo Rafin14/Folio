@@ -1,23 +1,15 @@
-# Release signing
+# Android signing
 
-Android uses the signing certificate to identify an app and permit compatible updates. An APK signed with a different key cannot update an installed copy with the same application ID.
+Android uses the package name and signing certificate to identify compatible app updates. Keep the same signing key for builds you intend to install over one another. Before uninstalling to switch certificates, export your Library and verify the backup outside Folio. Android deletes local app data on uninstall.
 
-Folio's application ID is `dev.folio.scanner`. The current release configuration requires the existing certificate with SHA-1 `93:3B:CF:4C:3B:98:75:80:5B:F9:A8:DF:05:74:1F:79:DD:85:50:75`. A newly generated key cannot reproduce that certificate. Debug builds use the local Android debug certificate and remain available independently.
+## Build locally
 
-## Configure a source build
+`assembleDebug` uses the machine's Android debug key for development. For a signed production build, copy [keystore.properties.example](../keystore.properties.example) to the ignored `keystore.properties`. Set the absolute path to your release keystore outside the repository and configure the alias and passwords locally. Then run `:app:assembleRelease` with the Gradle wrapper.
 
-Keep the existing release keystore outside the source directory. Copy the root [configuration template](../keystore.properties.example) to `keystore.properties` and configure it locally. The required properties are `storeFile`, `storePassword`, `keyAlias`, and `keyPassword`. Use an absolute keystore path and the credentials for that existing key.
+Release signing verifies that the keystore contains an accessible, valid private key entry and rejects Android debug keys. To build an unsigned release APK for inspection, pass `-Pfolio.unsignedRelease=true`. An unsigned APK must be signed before installation.
 
-`keystore.properties` and keystore files are ignored by Git and must never be included in public source packages. Do not publish passwords, private keys, or tokens.
+## Verify and back up
 
-From the project root on Windows:
+Use Android SDK build-tools to run `apksigner verify --print-certs PATH_TO_APK`. Check that the certificate matches the intended distribution channel. If you use Google Drive Backup, register the application ID and certificate SHA-1 in your own Google Cloud project. See [Google Drive setup](GOOGLE_DRIVE_SETUP.md).
 
-```powershell
-.\gradlew.bat :app:assembleRelease '-Pfolio.releaseArmOnly=true'
-```
-
-Gradle rejects missing or invalid credentials, a debug key, a keystore inside the repository, or a certificate that does not match the required identity. A successful debug build does not establish release-signing compatibility.
-
-Verify an APK with the Android SDK's `apksigner verify --print-certs` command. The actual signing certificate and application ID must also match the Android OAuth client used for Google sign-in. Configuring the expected fingerprint as text does not change an APK's certificate.
-
-Keep encrypted backups of the original keystore and its credentials in separate secure locations. Losing the signing key can prevent compatible updates outside stores that manage app signing. Never replace or rotate an established key casually.
+Store an encrypted backup of the keystore and its recovery credentials in a secure location outside the repository. Keep signing keys, credentials, and configured machine properties out of Git.

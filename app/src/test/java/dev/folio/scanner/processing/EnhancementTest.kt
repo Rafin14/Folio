@@ -15,4 +15,19 @@ class EnhancementTest {
         assertThrows(IllegalArgumentException::class.java) { Enhancement(brightness = Double.NaN) }
         assertThrows(IllegalArgumentException::class.java) { Enhancement(sharpness = 3.0) }
     }
+
+    @Test fun stackedPresetsRoundTripToggleAndKeepManualAdjustments() {
+        val original = Enhancement(brightness = 6.0)
+        val stack = original.togglePreset("Lighten").togglePreset("Grayscale").togglePreset("Sharpen")
+        assertEquals(listOf("Grayscale", "Sharpen", "Lighten"), stack.activePresets)
+        assertEquals(stack, Enhancement.parse(stack.encode()))
+        assertTrue(stack.usesGrayscale)
+        assertEquals(30.0, stack.brightnessOffset, 0.0)
+        assertEquals(.8, stack.effectiveSharpness, 0.0)
+        assertFalse(stack.togglePreset("Grayscale").usesGrayscale)
+        assertEquals(original, stack.togglePreset("Original"))
+        assertThrows(IllegalArgumentException::class.java) { Enhancement.parse("Original+Sharpen") }
+        assertThrows(IllegalArgumentException::class.java) { Enhancement.parse("Lighten+Lighten") }
+        assertThrows(IllegalArgumentException::class.java) { Enhancement.parse("Lighten+Unknown") }
+    }
 }

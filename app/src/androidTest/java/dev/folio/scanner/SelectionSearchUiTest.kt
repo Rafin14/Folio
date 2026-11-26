@@ -96,7 +96,8 @@ class SelectionSearchUiTest {
         } finally { device.pressBack(); runBlocking { repo.purgeForTest(doc) } }
     }
     @Test fun ocrHighlightsActualTextNavigatesWordsPhrasesAndWrapsAfterRecreation() {
-        val doc=runBlocking { repo.create("Repeated OCR search") }
+        val title = "Repeated OCR search ${System.nanoTime()}"
+        val doc=runBlocking { repo.create(title) }
         try {
             val id=page(doc)
             val lines=listOf("Invoice paid one")+List(30) { "Other printed line $it" }+listOf("INVOICE PAID two","Invoice paid three")
@@ -104,7 +105,7 @@ class SelectionSearchUiTest {
             runBlocking { val p=repo.dao.page(id)!!; val hash=dev.folio.scanner.backup.hashFile(File(p.originalImageUri))
                 repo.dao.save(OcrResult(id,text,1,regionsJson(lines.map { TextRegion(it,listOf(.1,.1,.8,.1,.8,.2,.1,.2),.9) }),"complete",ocrRevision(p,hash),hash,"en","PaddleOCR",OCR_MODEL,OCR_PREPROCESS,p.width,p.height))
             }
-            waitText("Repeated OCR search"); compose.onNodeWithText("Repeated OCR search").performClick()
+            waitText(title); compose.onNodeWithText(title).performClick()
             compose.onNodeWithContentDescription("Document actions").performClick(); compose.onNodeWithText("Extract Text").performClick()
             compose.onNodeWithText("Search within text").performTextInput("invoice")
             waitText("1 of 3"); compose.onNodeWithContentDescription("Previous match").performClick(); waitText("3 of 3")

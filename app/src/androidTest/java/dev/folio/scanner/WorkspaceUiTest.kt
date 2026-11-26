@@ -133,6 +133,15 @@ class WorkspaceUiTest {
             compose.waitUntil(15000) { compose.onAllNodesWithContentDescription("Preview page 10").fetchSemanticsNodes().any { it.boundsInRoot.height>0 } }
             compose.onNodeWithContentDescription("Preview page 10").assertIsDisplayed()
             compose.onNodeWithText("Match").assertIsDisplayed()
+            val gallery = compose.onNode(hasScrollToIndexAction()).fetchSemanticsNode().boundsInRoot
+            val footer = compose.onNodeWithContentDescription("Print document").fetchSemanticsNode().boundsInRoot
+            val density = compose.activity.resources.displayMetrics.density
+            assertTrue("Gallery should reach the footer with only a small gap", footer.top - gallery.bottom < 20f * density)
+            val last = compose.onNodeWithContentDescription("Preview page 10").fetchSemanticsNode().boundsInRoot
+            assertTrue("The final page should scroll clear of the footer", last.bottom < footer.top)
+            compose.waitForIdle()
+            assertTrue(UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).takeScreenshot(
+                File(context.getExternalFilesDir(null), "folio-document-scroll-end.png")))
             compose.onAllNodesWithContentDescription("Enhanced page preview").assertCountEquals(0)
         } finally { runBlocking { docs.purgeForTest(doc) } }
     }

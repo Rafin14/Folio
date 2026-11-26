@@ -9,6 +9,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class BackupManifestTest {
+    @Test fun stackedFilterRecipeSurvivesBackupValidationAndRoundTrip() {
+        val stack = Enhancement("Document").togglePreset("Sharpen").togglePreset("Lighten")
+        val manifest = fixture().copy(pages = pages.map { it.copy(page = it.page.copy(enhancement = stack.encode())) })
+        manifest.validate()
+        val restored = BackupManifest.decode(manifest.encode())
+        assertEquals(List(2) { stack }, restored.pages.map { Enhancement.parse(it.page.enhancement) })
+    }
+
     @Test fun pageTrashRoundTripsAndRemovalKeepsOtherTrashedPages() {
         val m=fixture(); val trash=m.pages.last().copy(page=m.pages.last().page.copy(position=1000001,trashedAt=40,trashPosition=1,trashDocumentTitle=doc.title))
         val archived=m.copy(documents=listOf(doc.copy(pageCount=1)),pages=listOf(m.pages.first(),trash))

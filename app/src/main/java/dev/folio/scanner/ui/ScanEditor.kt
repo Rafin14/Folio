@@ -23,7 +23,7 @@ fun ScanEditor(id: String, model: LibraryViewModel, finished: (String) -> Unit, 
     else saved.SaveableStateProvider("filters") {
         PageEditor(id, model, ::back, { cropping = true }, draft = true, retake = ::retakeScan, accepted = finished)
     }
-    if (discard) AlertDialog(onDismissRequest = { discard = false }, title = { Text("Discard this scan?") }, text = { Text("Your current scan and edits haven't been saved.") },
+    if (discard) FolioDialog(onDismissRequest = { discard = false }, title = { Text("Discard this scan?") }, text = { Text("Your current scan and edits haven't been saved.") },
         confirmButton = { TextButton(onClick = { draft?.let { scan -> model.run { model.repository.discardDraft(id); finished(scan.documentId) } } }, enabled = !busy && draft != null) { Text("Discard") } },
         dismissButton = { TextButton(onClick = { discard = false }) { Text("Keep editing") } })
 }

@@ -46,7 +46,7 @@ fun ExtractedTextScreen(document:String,page:String?,model:LibraryViewModel,back
     } }
     val active=matches.getOrNull(current.coerceAtMost((matches.size-1).coerceAtLeast(0)))
     LaunchedEffect(active) { active?.let { match -> val index=shown.indexOfFirst { it.id==match.first }; if(index>=0) scroll.scrollToItem(index) } }
-    Scaffold(modifier=Modifier.imePadding(),topBar={ TopAppBar(title={ Text(state.documents.firstOrNull { it.id==document }?.title ?: "Extracted text",maxLines=1) },navigationIcon={ IconButton(onClick=back) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back") } },actions={
+    Scaffold(modifier=Modifier.imePadding(),topBar={ FolioTopBar(title={ Text(state.documents.firstOrNull { it.id==document }?.title ?: "Extracted text",maxLines=1) },navigationIcon={ IconButton(onClick=back) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back") } },actions={
         IconButton(enabled=text.isNotEmpty(),onClick={ (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Folio extracted text",text)) }) { Icon(Icons.Outlined.ContentCopy,"Copy All") }
         IconButton(enabled=text.isNotEmpty(),onClick={ context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,text),"Share extracted text")) }) { Icon(Icons.Outlined.Share,"Share extracted text") }
         IconButton(onClick={ rerun=true }) { Icon(Icons.Outlined.Refresh,"Re-run OCR") }
@@ -55,7 +55,7 @@ fun ExtractedTextScreen(document:String,page:String?,model:LibraryViewModel,back
             FilterChip(selected==null,{ selected=null },label={ Text("All pages") })
             pages.forEach { p -> FilterChip(selected==p.id,{ selected=p.id },label={ Text(p.label()) }) }
         }
-        OutlinedTextField(query,{ query=it },singleLine=true,placeholder={ Text("Search within text") },leadingIcon={ Icon(Icons.Outlined.Search,null) },modifier=Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp))
+        OutlinedTextField(query,{ query=it },singleLine=true,placeholder={ Text("Search within text") },leadingIcon={ Icon(Icons.Outlined.Search,null) },modifier=Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp),shape=MaterialTheme.shapes.medium)
         if(query.isNotBlank()) Row(Modifier.fillMaxWidth().padding(horizontal=16.dp),verticalAlignment=Alignment.CenterVertically) {
             Text(if(matches.isEmpty()) "0 matches" else "${matches.indexOf(active)+1} of ${matches.size}",Modifier.weight(1f))
             IconButton(enabled=matches.isNotEmpty(),onClick={ focus.clearFocus(); current=nextTextMatch(current,-1,matches.size) }) { Icon(Icons.Outlined.KeyboardArrowUp,"Previous match") }
@@ -101,20 +101,28 @@ fun ExtractedTextScreen(document:String,page:String?,model:LibraryViewModel,back
             }
         }
     } }
-    if(rerun) AlertDialog(onDismissRequest={ rerun=false },title={ Text("Recognize text again?") },text={ Text("Replace extracted text for ${if(selected==null) "this document" else "this page"}. Your images stay unchanged.") },confirmButton={ TextButton(onClick={ rerun=false; model.run { model.ocr.request(document,selected,true) } }) { Text("Re-run OCR") } },dismissButton={ TextButton(onClick={ rerun=false }) { Text("Cancel") } })
+    if(rerun) FolioDialog(onDismissRequest={ rerun=false },title={ Text("Recognize text again?") },text={ Text("Replace extracted text for ${if(selected==null) "this document" else "this page"}. Your images stay unchanged.") },confirmButton={ TextButton(onClick={ rerun=false; model.run { model.ocr.request(document,selected,true) } }) { Text("Re-run OCR") } },dismissButton={ TextButton(onClick={ rerun=false }) { Text("Cancel") } })
 }
 
 @Composable
 fun OcrSettingsScreen(model:LibraryViewModel,back:()->Unit) {
     val automatic by model.ocr.automatic.collectAsStateWithLifecycle(); var clear by remember { mutableStateOf(false) }
-    Scaffold(topBar={ TopAppBar(title={ Text("Text recognition") },navigationIcon={ IconButton(onClick=back) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back") } }) }) { padding ->
+    Scaffold(topBar={ FolioTopBar(title={ Text("Text recognition") },navigationIcon={ IconButton(onClick=back) { Icon(Icons.AutoMirrored.Filled.ArrowBack,"Back") } }) }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
-            ListItem(headlineContent={ Text("Automatic OCR") },supportingContent={ Text("Recognize newly accepted pages in the background") },trailingContent={ Switch(automatic,model.ocr::automatic) })
+            FolioPanel {
+                ListItem(headlineContent={ Text("Automatic OCR") },supportingContent={ Text("Recognize newly accepted pages in the background") },trailingContent={ Switch(automatic,model.ocr::automatic) },
+                    colors=ListItemDefaults.colors(containerColor=androidx.compose.ui.graphics.Color.Transparent))
+            }
             Text("English printed text · PP-OCRv6_small",style=MaterialTheme.typography.titleMedium)
             Text("Recognition works offline. Handwriting, mathematics and other languages are not supported Folio capabilities. Authorized Drive backups include stored extracted text.",color=MaterialTheme.colorScheme.onSurfaceVariant)
-            TextButton(onClick={ model.run { model.ocr.retryFailed() } }) { Text("Retry failed OCR") }
-            TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick={ clear=true }) { Text("Clear OCR data") }
+            FolioPanel {
+                Column(Modifier.padding(horizontal=8.dp)) {
+                    TextButton(onClick={ model.run { model.ocr.retryFailed() } },modifier=Modifier.fillMaxWidth()) { Text("Retry failed OCR") }
+                    MenuSeparator()
+                    TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick={ clear=true },modifier=Modifier.fillMaxWidth()) { Text("Clear OCR data") }
+                }
+            }
         }
     }
-    if(clear) AlertDialog(onDismissRequest={ clear=false },title={ Text("Clear extracted text?") },text={ Text("Remove local text and its search index, pause automatic OCR, and cancel recognition. Document images are kept. Older Drive backups may still contain text.") },confirmButton={ TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick={ clear=false; model.run { model.ocr.clear() } }) { Text("Clear OCR data") } },dismissButton={ TextButton(onClick={ clear=false }) { Text("Cancel") } })
+    if(clear) FolioDialog(onDismissRequest={ clear=false },title={ Text("Clear extracted text?") },text={ Text("Remove local text and its search index, pause automatic OCR, and cancel recognition. Document images are kept. Older Drive backups may still contain text.") },confirmButton={ TextButton(colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error),onClick={ clear=false; model.run { model.ocr.clear() } }) { Text("Clear OCR data") } },dismissButton={ TextButton(onClick={ clear=false }) { Text("Cancel") } })
 }

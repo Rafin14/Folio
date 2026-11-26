@@ -1,12 +1,17 @@
 package dev.folio.scanner
 
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.By
+import androidx.test.uiautomator.Until
 import com.itextpdf.kernel.pdf.*
 import dagger.hilt.android.EntryPointAccessors
 import dev.folio.scanner.pdf.PdfWorkerDependencies
@@ -17,6 +22,7 @@ import org.junit.Rule
 import org.junit.Test
 import java.io.File
 import java.util.UUID
+import java.util.regex.Pattern
 
 class FinalReleaseUiTest {
     @get:Rule val compose=createAndroidComposeRule<MainActivity>()
@@ -27,9 +33,9 @@ class FinalReleaseUiTest {
         val directory=File(context.getExternalFilesDir(null),"final-release-ui").apply {mkdirs()}
         UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).takeScreenshot(File(directory,"$name.png"))
     }
-    private fun session():Pair<String,File> {
+    private fun session(pageCount: Int = 3):Pair<String,File> {
         val source=File(context.cacheDir,"shared-images/Release sample ${UUID.randomUUID()}.pdf").apply {parentFile!!.mkdirs()}
-        PdfDocument(PdfWriter(source)).use {pdf -> repeat(3) {pdf.addNewPage(com.itextpdf.kernel.geom.PageSize(400f+it*100f,700f))}}
+        PdfDocument(PdfWriter(source)).use {pdf -> repeat(pageCount) {pdf.addNewPage(com.itextpdf.kernel.geom.PageSize(400f+it*100f,700f))}}
         return runBlocking {utility.open("edit",listOf(androidx.core.content.FileProvider.getUriForFile(context,"dev.folio.scanner.files",source)),initialImport=true)} to source
     }
     @Test fun pinchPanDrawingAndResetPreservePageNavigation() {
@@ -89,6 +95,51 @@ class FinalReleaseUiTest {
             } finally {runBlocking {utility.discard(managedId)}}
         } finally {runBlocking {utility.discard(id);utility.documents.purgeForTest(document)};source.delete()}
     }
+    @Test fun galleryKeepsScrollingWithFingerHeldAtEdge() {
+        val (id, source) = session(pageCount = 14)
+        val original = source.readBytes()
+        try {
+            compose.activityRule.scenario.onActivity { activity ->
+                val model = ViewModelProvider(activity)[LibraryViewModel::class.java]
+                activity.setContent { FolioTheme("Dark") { PdfWorkspace(null, model, {}, {}, initialSession = id) } }
+            }
+            val first = compose.onNodeWithContentDescription("Open PDF page 1")
+            compose.waitUntil(15000) { first.isDisplayed() }
+            val firstBounds = first.fetchSemanticsNode().boundsInRoot
+            val trayTop = compose.onNodeWithText("Print").fetchSemanticsNode().boundsInRoot.top
+            val start = firstBounds.center
+            val nearBottom = Offset(start.x, trayTop - 12f)
+            val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
+            val downTime = android.os.SystemClock.uptimeMillis()
+            fun inject(action: Int, position: Offset) {
+                val event = android.view.MotionEvent.obtain(
+                    downTime, android.os.SystemClock.uptimeMillis(), action, position.x, position.y, 0
+                )
+                try {
+                    event.source = android.view.InputDevice.SOURCE_TOUCHSCREEN
+                    assertTrue(automation.injectInputEvent(event, true))
+                } finally { event.recycle() }
+            }
+            compose.mainClock.autoAdvance = false
+            inject(android.view.MotionEvent.ACTION_DOWN, start)
+            try {
+                compose.mainClock.advanceTimeBy(850)
+                inject(android.view.MotionEvent.ACTION_MOVE, nearBottom)
+                compose.mainClock.advanceTimeBy(2600)
+            } finally {
+                inject(android.view.MotionEvent.ACTION_UP, nearBottom)
+            }
+            compose.mainClock.autoAdvance = true
+            compose.waitUntil { utility.pages(id).indexOfFirst { it.source == 1 } >= 6 }
+            assertArrayEquals(original, source.readBytes())
+            screenshot("gallery-edge-scroll-dark")
+        } finally {
+            compose.mainClock.autoAdvance = true
+            runBlocking { utility.discard(id) }
+            source.delete()
+        }
+    }
+
     @Test fun sourceAndContextMenusFitAllThemes() {
         listOf("Light","Dark","AMOLED").forEach {theme ->
             compose.activityRule.scenario.onActivity {it.setContent {FolioTheme(theme) {PdfSourceDialog("Edit PDF",{},{},{})}}}
@@ -97,6 +148,51 @@ class FinalReleaseUiTest {
             compose.activityRule.scenario.onActivity {it.setContent {FolioTheme(theme) {FolioOverflowMenu(true,{},"OCR PDF") {listOf("OCR PDF","PDF to Word","Save text","Copy text","Export PDF","Share","Rename","Duplicate","Discard analysis session").forEachIndexed {i,label ->if(i>0) MenuSeparator();FolioMenuItem(label,{})}}}}}
             compose.onNodeWithContentDescription("Close menu").assertIsDisplayed();compose.onNodeWithText("Discard analysis session").assertIsDisplayed()
             screenshot("menu-${theme.lowercase()}")
+        }
+    }
+
+    @Test fun pdfFooterFitsAndExportOpensAtLargeText() {
+        val (id, source) = session()
+        val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+        try {
+            for (scale in listOf(1f, 1.6f)) {
+                compose.activityRule.scenario.onActivity { activity ->
+                    val model = ViewModelProvider(activity)[LibraryViewModel::class.java]
+                    activity.setContent {
+                        val density = LocalDensity.current.density
+                        CompositionLocalProvider(LocalDensity provides Density(density, scale)) {
+                            FolioTheme("Dark") {
+                                PdfWorkspace(null, model, {}, {}, initialSession = id, importIntoFolio = true)
+                            }
+                        }
+                    }
+                }
+                compose.waitUntil(15000) { compose.onNodeWithText("Export").isDisplayed() }
+                val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
+                val minimum = 48f * context.resources.displayMetrics.density
+                val labels = listOf("Print", "Share", "Export")
+                val actions = labels.map { label ->
+                    compose.onNode(hasText(label) and hasClickAction()).assertIsDisplayed().assertIsEnabled()
+                        .fetchSemanticsNode().boundsInRoot
+                }
+                actions.forEach { bounds ->
+                    assertTrue("Full action must fit inside the viewport", bounds.left > root.left && bounds.right < root.right)
+                    assertTrue("Action must retain its full touch target", bounds.height >= minimum - 1f)
+                }
+                assertTrue("Footer actions must not overlap", actions.zipWithNext().none { (a, b) -> a.overlaps(b) })
+                compose.onNodeWithText("Save to Folio").assertIsDisplayed()
+                compose.onNodeWithText("3 pages · Device PDF").assertIsDisplayed()
+                device.waitForIdle()
+                Thread.sleep(1000)
+                screenshot(if (scale == 1f) "pdf-footer-narrow" else "pdf-footer-large-text")
+            }
+            compose.onNodeWithText("Export").performTouchInput { click() }
+            assertTrue("Export should open Android's file picker",
+                device.wait(Until.hasObject(By.pkg(Pattern.compile("com\\.(google\\.)?android\\.documentsui"))), 20000))
+            device.pressBack()
+        } finally {
+            runBlocking { utility.discard(id) }
+            source.delete()
         }
     }
 }

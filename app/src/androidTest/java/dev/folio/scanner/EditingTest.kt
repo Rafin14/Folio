@@ -7,6 +7,7 @@ import androidx.test.core.app.ApplicationProvider
 import dev.folio.scanner.data.*
 import dev.folio.scanner.processing.Enhancement
 import dev.folio.scanner.processing.Geometry
+import dev.folio.scanner.processing.ImagePipeline
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
@@ -18,6 +19,25 @@ import java.io.File
 import java.util.UUID
 
 class EditingTest {
+    @Test fun stackedPresetsChangeTheSameOutputPixels() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val source = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.BLUE) }
+        try {
+            ImagePipeline(context).use { pipeline ->
+                val grayscale = Enhancement("Grayscale")
+                fun pixel(settings: Enhancement): Int {
+                    val result = pipeline.enhance(source, settings, 0)
+                    return try { result.getPixel(32, 32) } finally { result.recycle() }
+                }
+                val gray = pixel(grayscale)
+                val stacked = pixel(grayscale.togglePreset("Lighten"))
+                assertEquals(Color.red(gray) + 24, Color.red(stacked))
+                assertEquals(Color.red(stacked), Color.green(stacked))
+                assertEquals(Color.red(stacked), Color.blue(stacked))
+            }
+        } finally { source.recycle() }
+    }
+
     @Test fun cancellationKeepsPublishedOriginalAndThumbnail() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val database = Room.inMemoryDatabaseBuilder(context, FolioDatabase::class.java).build()

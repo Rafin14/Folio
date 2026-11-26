@@ -479,34 +479,8 @@ class FolioBackupRepository @Inject constructor(@ApplicationContext private val 
                 require(target.length()==asset.bytes && hashFile(target)==asset.hash) { "Checksum failed for page asset ${asset.hash.take(12)}. Nothing was restored." }
                 report(++done,total)
             }
-            manifest.pages.forEach { entry ->
-                guard(); currentCoroutineContext().ensureActive()
-                val prepared=File(dir,"documents/${entry.page.documentId}").apply { mkdirs() }
-                suspend fun copy(hash:String,path:String) {
-                    val target=File(prepared,path); target.parentFile!!.mkdirs()
-                    if(!target.exists() || hashFile(target)!=hash) {
-                        val writing=File(target.path+".writing")
-                        val ctx=currentCoroutineContext()
-                        File(dir,hash).inputStream().use { input -> writing.outputStream().use { out -> val buffer=ByteArray(65536)
-                            while(true) { ctx.ensureActive(); guard(); val n=input.read(buffer); if(n<0) break; out.write(buffer,0,n) } } }
-                        check(writing.renameTo(target)) { "Could not prepare restored image." }
-                    }
-                }
-                copy(entry.original,"originals/${entry.page.id}.source")
-                if(entry.original!=entry.processed) copy(entry.processed,"processed/${entry.page.id}.source")
-                val bitmap=pipeline.decode(File(dir,entry.processed),768)
-                try { val thumb=File(prepared,"thumbnails/${entry.page.id}.jpg").apply { parentFile!!.mkdirs() }; thumb.outputStream().use { check(bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG,95,it)) } }
-                finally { bitmap.recycle() }
+            prepareBackupDocuments(manifest, dir, id, pipeline, { File(dir, it) }, ::guard) {
                 report(++done,total)
-            }
-            manifest.documents.forEach { doc ->
-                val prepared=File(dir,"documents/${doc.id}").apply { mkdirs() }
-                if(doc.pdfHash.isNotEmpty()) {
-                    val target=File(prepared,"pdf/${doc.pdfHash}.pdf").apply { parentFile!!.mkdirs() }
-                    File(dir,doc.pdfHash).inputStream().use { input -> target.outputStream().use { input.copyTo(it,65536) } }
-                    require(hashFile(target)==doc.pdfHash) { "Restored PDF checksum failed." }
-                }
-                atomicWrite(File(prepared,"restore-owner"),id.toByteArray())
             }
             guard(); val restored=documents.mergeBackup(manifest,dir,id); report(total,total)
             val root=request.optString("rootId")
@@ -528,29 +502,13 @@ class FolioBackupRepository @Inject constructor(@ApplicationContext private val 
         } else {
             val ready=File(dir,"snapshot.json")
             if(!ready.exists()) {
-                File(dir,"assets").deleteRecursively(); val pins=File(dir,"pins"); pins.deleteRecursively()
-                val (origin,pinned)=documents.pinBackup(pins)
-                val hashes=linkedMapOf<String,BackupAsset>(); val assetDir=File(dir,"assets").apply { mkdirs() }
-                val ctx=currentCoroutineContext()
-                val pages=pinned.pages.map { page ->
-                    fun retain(path:String):String {
-                        val file=File(path); val bytes=file.length(); require(bytes in 1..BackupManifest.MAX_ASSET_BYTES) { "Page asset exceeds the 100 MB backup limit." }
-                        val hash=hashFile(file) { ctx.ensureActive(); guard() }
-                        val destination=File(assetDir,hash); if(!destination.exists()) check(file.renameTo(destination)) { "Could not stage backup asset." }
-                        hashes[hash]=BackupAsset(hash,bytes); return hash
-                    }
-                    BackupPage(page.copy(originalImageUri="",processedImageUri="",thumbnailUri=""),retain(page.originalImageUri),retain(page.processedImageUri))
-                }
-                pinned.documents.filter { it.pdfHash.isNotEmpty() }.forEach { doc ->
-                    val file=File(pins,doc.pdfHash); require(hashFile(file)==doc.pdfHash && file.length()<=BackupManifest.MAX_ASSET_BYTES)
-                    val destination=File(assetDir,doc.pdfHash); if(!destination.exists()) check(file.renameTo(destination))
-                    hashes[doc.pdfHash]=BackupAsset(doc.pdfHash,destination.length())
-                }
-                val manifest=BackupManifest(id,System.currentTimeMillis(),pinned.folders,pinned.documents,pages,hashes.values.toList(),pinned.ocr); manifest.validate(false)
+                File(dir,"assets").deleteRecursively()
+                File(dir,"pins").deleteRecursively()
+                val (manifest,origin)=documents.stageBackup(dir,id,::guard)
                 atomicWrite(File(dir,"fingerprint"),BackupPlanner.fingerprint(origin).toByteArray())
                 val docHashes=JSONObject(); origin.documents.forEach { doc -> docHashes.put(doc.id,BackupPlanner.documentFingerprint(origin,doc)) }
                 atomicWrite(File(dir,"document-hashes.json"),docHashes.toString().toByteArray())
-                atomicWrite(ready,manifest.encode()); pins.deleteRecursively()
+                atomicWrite(ready,manifest.encode())
             }
             val alreadyDeleted=dao.driveDeletions().filter { (it.key.startsWith("$email:delete:") || it.key.startsWith("local:delete:")) }
             val snapshot=BackupManifest.decode(ready.readBytes(),false).withoutDeleted(alreadyDeleted)

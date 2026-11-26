@@ -42,6 +42,8 @@ import java.io.File
         }
         OutlinedTextField(filename,{filename=it},label={Text("Output filename")},singleLine=true,enabled=!exporting,modifier=Modifier.fillMaxWidth(),suffix={Text(".docx")})
         Text("Ruled tables become editable cells. Unruled or ambiguous tables remain editable text, with a conversion warning.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-        Button(onClick={picker.launch(pdfFileStem(filename)+".docx")},enabled=ready && !exporting && filename.isNotBlank(),modifier=Modifier.fillMaxWidth()) {Text("Convert and export DOCX")}
+        FolioGlassSurface(Modifier.fillMaxWidth()) {
+            Button(onClick={picker.launch(pdfFileStem(filename)+".docx")},enabled=ready && !exporting && filename.isNotBlank(),modifier=Modifier.fillMaxWidth().padding(8.dp)) {Text("Convert and export DOCX")}
+        }
     }
 }

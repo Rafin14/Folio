@@ -36,8 +36,14 @@ delivery/
 verification/
 .tools/
 *.zip
+.codex-attachments/
+/graphify-out/
 
 # Recoverable cleanup material and generated release checksums
 DELETE_ME_REVIEW/
 /SHA256SUMS.txt
 
+# Internal development notes and local backups
+/docs/repository-intelligence/
+Android Signing Backups/
+*.ppk

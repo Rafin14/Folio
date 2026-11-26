@@ -22,6 +22,21 @@ class BackupUiTest {
     @get:Rule val compose=createAndroidComposeRule<MainActivity>()
     @Test fun optionalBackupRemainsDisconnectedAcrossActivityRecreationAndHasNoUploadAction() {
         compose.onNodeWithContentDescription("Settings").performClick()
+        compose.onNodeWithText("Backup", substring = false).performScrollTo().performClick()
+        compose.onNodeWithText("Local backup").performClick()
+        compose.onNodeWithText("Export backup").assertIsDisplayed()
+        compose.onNodeWithText("Import backup").assertIsDisplayed()
+        val inst = InstrumentationRegistry.getInstrumentation()
+        val device = androidx.test.uiautomator.UiDevice.getInstance(inst)
+        assertTrue(device.takeScreenshot(java.io.File(inst.targetContext.getExternalFilesDir(null), "folio-local-backup.png")))
+        val documentsUi = androidx.test.uiautomator.By.pkg(java.util.regex.Pattern.compile("com\\.(google\\.)?android\\.documentsui"))
+        for (label in listOf("Export backup", "Import backup")) {
+            compose.onNodeWithText(label).performClick()
+            assertTrue("$label should open Android’s file picker",
+                device.wait(androidx.test.uiautomator.Until.hasObject(documentsUi), 20000))
+            device.pressBack()
+        }
+        compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithText("Google Drive Backup").performScrollTo().performClick()
         compose.onNodeWithText("Not connected").assertIsDisplayed()
         compose.onNodeWithText("Sign in with Google").assertIsDisplayed()
@@ -34,6 +49,7 @@ class BackupUiTest {
             compose.onNodeWithText("Google sign-in is not configured.",substring=true).performScrollTo().assertIsDisplayed()
             compose.onNodeWithText("Back Up Now").assertDoesNotExist()
         }
+        compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithText("New document",useUnmergedTree=true).assertIsDisplayed()

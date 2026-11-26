@@ -55,19 +55,11 @@ Google Drive Backup requires a configured Google OAuth client. Building without 
 
 ## Run checks
 
-On Windows, run the build, unit tests and Android lint through the existing check script:
-
-```powershell
-.\scripts\check.ps1
-```
-
-Add `-Device` to also run instrumentation tests on a connected Android device or emulator. The equivalent Gradle checks on any platform are `:app:assembleDebug :app:testDebugUnitTest :app:lintDebug`; instrumentation tests use `:app:connectedDebugAndroidTest`.
+Run `:app:assembleDebug :app:testDebugUnitTest :app:lintDebug` for the build, JVM tests and lint. With an emulator or Android device connected, run `:app:connectedDebugAndroidTest` for device tests. Run device tests on a disposable emulator or test profile because the tests modify app data.
 
 ## Release signing
 
-Release builds require an existing private keystore and a Git-ignored `keystore.properties` configuration. They do not fall back to debug signing. The signing certificate must match the identity enforced by the project and the Android OAuth client used for Google Drive. See [Release signing](docs/RELEASE_SIGNING.md).
-
-The prepared `Folio_GitHub_Source.zip` includes actual model weights. Unlike GitHub's automatic source archive, it can be extracted and built without fetching LFS objects. The SDK, JDK, and Gradle dependency requirements still apply. Local OAuth and signing configuration are excluded; configure them separately when needed.
+Release builds require an existing private keystore and a Git-ignored `keystore.properties` configuration. They do not fall back to debug signing. Reuse your signing certificate for app updates and register it with Google if you enable Drive integration. See [Release signing](docs/RELEASE_SIGNING.md).
 
 ## License
 
